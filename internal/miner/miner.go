@@ -3,12 +3,12 @@ package miner
 import (
 	"context"
 	"fmt"
-	"log"
 	"time"
 
 	"github.com/fairchain/fairchain/internal/chain"
 	"github.com/fairchain/fairchain/internal/consensus"
 	"github.com/fairchain/fairchain/internal/crypto"
+	"github.com/fairchain/fairchain/internal/logging"
 	"github.com/fairchain/fairchain/internal/mempool"
 	"github.com/fairchain/fairchain/internal/params"
 	"github.com/fairchain/fairchain/internal/types"
@@ -38,11 +38,11 @@ func New(c *chain.Chain, e consensus.Engine, mp *mempool.Mempool, p *params.Chai
 
 // Run starts the mining loop. It blocks until ctx is cancelled.
 func (m *Miner) Run(ctx context.Context) {
-	log.Println("[miner] starting mining loop")
+	logging.L.Info("starting mining loop", "component", "miner")
 	for {
 		select {
 		case <-ctx.Done():
-			log.Println("[miner] stopping")
+			logging.L.Info("stopping mining loop", "component", "miner")
 			return
 		default:
 		}
@@ -52,7 +52,7 @@ func (m *Miner) Run(ctx context.Context) {
 			if ctx.Err() != nil {
 				return
 			}
-			log.Printf("[miner] error: %v", err)
+			logging.L.Error("mining error", "component", "miner", "error", err)
 			time.Sleep(time.Second)
 			continue
 		}
@@ -134,7 +134,7 @@ func (m *Miner) MineOne(ctx context.Context) (*types.Block, error) {
 				Transactions: txs,
 			}
 			blockHash := crypto.HashBlockHeader(&block.Header)
-			log.Printf("[miner] found block %s at height %d (nonce=%d)", blockHash.ReverseString(), newHeight, header.Nonce)
+			logging.L.Info("found block", "component", "miner", "hash", blockHash.ReverseString(), "height", newHeight, "nonce", header.Nonce)
 			return block, nil
 		}
 

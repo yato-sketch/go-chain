@@ -4,17 +4,19 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"log"
 	"os"
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/fairchain/fairchain/internal/chain"
 	"github.com/fairchain/fairchain/internal/config"
 	"github.com/fairchain/fairchain/internal/consensus/pow"
 	"github.com/fairchain/fairchain/internal/crypto"
+	"github.com/fairchain/fairchain/internal/logging"
 	"github.com/fairchain/fairchain/internal/mempool"
+	"github.com/fairchain/fairchain/internal/metrics"
 	"github.com/fairchain/fairchain/internal/miner"
 	"github.com/fairchain/fairchain/internal/p2p"
 	fcparams "github.com/fairchain/fairchain/internal/params"
@@ -31,7 +33,11 @@ func main() {
 	rpcAddr := flag.String("rpc", "", "Override RPC listen address")
 	mine := flag.Bool("mine", false, "Enable mining")
 	seedPeers := flag.String("seed-peers", "", "Comma-separated seed peer addresses (ip:port,ip:port)")
+	logLevel := flag.String("log-level", "info", "Log level: debug, info, warn, error")
 	flag.Parse()
+
+	logging.Init(*logLevel)
+	log := logging.L
 
 	// Load config.
 	var cfg *config.Config
@@ -39,7 +45,8 @@ func main() {
 	if *configPath != "" {
 		cfg, err = config.LoadConfig(*configPath)
 		if err != nil {
-			log.Fatalf("Failed to load config: %v", err)
+			log.Error("failed to load config", "error", err)
+			os.Exit(1)
 		}
 	} else {
 		cfg = config.DefaultConfig()
@@ -68,7 +75,8 @@ func main() {
 	// Resolve chain params.
 	params := fcparams.NetworkByName(cfg.Network)
 	if params == nil {
-		log.Fatalf("Unknown network: %s", cfg.Network)
+		log.Error("unknown network", "network", cfg.Network)
+		os.Exit(1)
 	}
 
 	// Mine and set genesis for the network.
@@ -76,24 +84,26 @@ func main() {
 
 	// Ensure data directory exists.
 	if err := cfg.EnsureDataDir(); err != nil {
-		log.Fatalf("Failed to create data dir: %v", err)
+		log.Error("failed to create data dir", "error", err)
+		os.Exit(1)
 	}
 
-	log.Printf("Starting fairchain node (network=%s, datadir=%s)", cfg.Network, cfg.DataDir)
+	log.Info("starting fairchain node", "network", cfg.Network, "datadir", cfg.DataDir)
 
 	// Open block store.
 	blockStore, err := store.NewBoltStore(cfg.DBPath())
 	if err != nil {
-		log.Fatalf("Failed to open block store: %v", err)
+		log.Error("failed to open block store", "error", err)
+		os.Exit(1)
 	}
-	defer blockStore.Close()
 
 	// Open peer store.
 	peerStore, err := store.NewBoltStore(cfg.PeerDBPath())
 	if err != nil {
-		log.Fatalf("Failed to open peer store: %v", err)
+		blockStore.Close()
+		log.Error("failed to open peer store", "error", err)
+		os.Exit(1)
 	}
-	defer peerStore.Close()
 
 	// Create consensus engine.
 	engine := pow.New()
@@ -101,32 +111,41 @@ func main() {
 	// Create blockchain.
 	bc := chain.New(params, engine, blockStore)
 	if err := bc.Init(); err != nil {
-		log.Fatalf("Failed to initialize chain: %v", err)
+		peerStore.Close()
+		blockStore.Close()
+		log.Error("failed to initialize chain", "error", err)
+		os.Exit(1)
 	}
 
 	tipHash, tipHeight := bc.Tip()
-	log.Printf("Chain initialized: tip=%s height=%d", tipHash.ReverseString(), tipHeight)
+	log.Info("chain initialized", "tip", tipHash.ReverseString(), "height", tipHeight)
 
 	// Create mempool.
 	mp := mempool.New(params)
 
 	// Context for graceful shutdown.
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
 	// Start P2P manager.
 	p2pMgr := p2p.NewManager(params, bc, mp, peerStore, cfg.ListenAddr, cfg.MaxInbound, cfg.MaxOutbound, cfg.SeedPeers)
 	if err := p2pMgr.Start(ctx); err != nil {
-		log.Fatalf("Failed to start P2P: %v", err)
+		cancel()
+		peerStore.Close()
+		blockStore.Close()
+		log.Error("failed to start P2P", "error", err)
+		os.Exit(1)
 	}
-	defer p2pMgr.Stop()
 
-	// Start RPC server.
+	// Start RPC server (with metrics endpoint).
 	rpcServer := rpc.New(cfg.RPCAddr, bc, mp, p2pMgr, params)
 	if err := rpcServer.Start(); err != nil {
-		log.Fatalf("Failed to start RPC: %v", err)
+		cancel()
+		p2pMgr.Stop()
+		peerStore.Close()
+		blockStore.Close()
+		log.Error("failed to start RPC", "error", err)
+		os.Exit(1)
 	}
-	defer rpcServer.Stop(ctx)
 
 	// Start miner if enabled.
 	if cfg.MiningEnabled {
@@ -137,11 +156,12 @@ func main() {
 		m := miner.New(bc, engine, mp, params, rewardScript, func(block *types.Block) {
 			height, err := bc.ProcessBlock(block)
 			if err != nil {
-				log.Printf("[node] mined block rejected: %v", err)
+				log.Warn("mined block rejected", "error", err)
 				return
 			}
 			blockHash := crypto.HashBlockHeader(&block.Header)
-			log.Printf("[node] mined block accepted: %s height=%d", blockHash.ReverseString(), height)
+			metrics.Global.BlocksMined.Add(1)
+			log.Info("mined block accepted", "hash", blockHash.ReverseString(), "height", height)
 			p2pMgr.BroadcastBlock(blockHash, block)
 		})
 		go m.Run(ctx)
@@ -151,8 +171,33 @@ func main() {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	sig := <-sigCh
-	log.Printf("Received signal %v, shutting down...", sig)
+	log.Info("received shutdown signal", "signal", sig)
+
+	// Ordered shutdown: cancel context first (stops miner, P2P loops),
+	// then tear down services in reverse startup order.
 	cancel()
+
+	log.Info("stopping RPC server...")
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer shutdownCancel()
+	if err := rpcServer.Stop(shutdownCtx); err != nil {
+		log.Warn("RPC shutdown error", "error", err)
+	}
+
+	log.Info("stopping P2P manager...")
+	p2pMgr.Stop()
+
+	log.Info("closing peer store...")
+	if err := peerStore.Close(); err != nil {
+		log.Warn("peer store close error", "error", err)
+	}
+
+	log.Info("closing block store...")
+	if err := blockStore.Close(); err != nil {
+		log.Warn("block store close error", "error", err)
+	}
+
+	log.Info("shutdown complete")
 }
 
 // initNetworkGenesis mines the genesis block for the given params if not already set.
@@ -164,7 +209,7 @@ func initNetworkGenesis(p *fcparams.ChainParams) {
 	cfg := fcparams.GenesisConfig{
 		NetworkName:     p.Name,
 		CoinbaseMessage: []byte(fmt.Sprintf("fairchain %s genesis", p.Name)),
-		Timestamp:       1773212462, // Fixed timestamp for reproducibility: 2026-03-11T07:01:02Z
+		Timestamp:       1773212462,
 		Bits:            p.InitialBits,
 		Version:         1,
 		Reward:          p.InitialSubsidy,
@@ -173,10 +218,11 @@ func initNetworkGenesis(p *fcparams.ChainParams) {
 
 	block := fcparams.BuildGenesisBlock(cfg)
 	if err := pow.MineGenesis(&block); err != nil {
-		log.Fatalf("Failed to mine genesis: %v", err)
+		logging.L.Error("failed to mine genesis", "error", err)
+		os.Exit(1)
 	}
 
 	hash := crypto.HashBlockHeader(&block.Header)
 	fcparams.InitGenesis(p, block, hash)
-	log.Printf("Genesis block: %s (nonce=%d)", hash.ReverseString(), block.Header.Nonce)
+	logging.L.Info("genesis block", "hash", hash.ReverseString(), "nonce", block.Header.Nonce)
 }

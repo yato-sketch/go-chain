@@ -3,7 +3,6 @@ package chain
 import (
 	"bytes"
 	"fmt"
-	"log"
 	"math/big"
 	"sort"
 	"sync"
@@ -11,6 +10,8 @@ import (
 
 	"github.com/fairchain/fairchain/internal/consensus"
 	"github.com/fairchain/fairchain/internal/crypto"
+	"github.com/fairchain/fairchain/internal/logging"
+	"github.com/fairchain/fairchain/internal/metrics"
 	"github.com/fairchain/fairchain/internal/params"
 	"github.com/fairchain/fairchain/internal/store"
 	"github.com/fairchain/fairchain/internal/types"
@@ -193,9 +194,11 @@ func (c *Chain) ProcessBlock(block *types.Block) (uint32, error) {
 
 	// Already known?
 	if _, ok := c.heightByHash[blockHash]; ok {
+		metrics.Global.BlocksRejected.Add(1)
 		return 0, fmt.Errorf("block %s already in chain", blockHash)
 	}
 	if _, ok := c.orphans[blockHash]; ok {
+		metrics.Global.BlocksRejected.Add(1)
 		return 0, fmt.Errorf("block %s already in orphan pool", blockHash)
 	}
 
@@ -207,6 +210,7 @@ func (c *Chain) ProcessBlock(block *types.Block) (uint32, error) {
 			return 0, fmt.Errorf("orphan pool full, rejecting %s", blockHash)
 		}
 		c.orphans[blockHash] = block
+		metrics.Global.OrphansReceived.Add(1)
 		return 0, fmt.Errorf("orphan block %s (parent %s unknown)", blockHash, block.Header.PrevBlock)
 	}
 
@@ -266,6 +270,7 @@ func (c *Chain) ProcessBlock(block *types.Block) (uint32, error) {
 	// Process any orphans that depended on this block.
 	c.processOrphans(blockHash)
 
+	metrics.Global.BlocksAccepted.Add(1)
 	return newHeight, nil
 }
 
@@ -314,8 +319,10 @@ func (c *Chain) reorg(newTipHash types.Hash, newTipHeight uint32, newWork *big.I
 	forkParentHeight := c.heightByHash[forkBlock.Header.PrevBlock]
 
 	oldTipHeight := c.tipHeight
-	log.Printf("[chain] reorg: fork at height %d, old tip height %d → new tip height %d (depth %d)",
-		forkParentHeight, oldTipHeight, newTipHeight, oldTipHeight-forkParentHeight)
+	reorgDepth := oldTipHeight - forkParentHeight
+	logging.L.Warn("chain reorg", "component", "chain", "fork_height", forkParentHeight, "old_tip", oldTipHeight, "new_tip", newTipHeight, "depth", reorgDepth)
+	metrics.Global.Reorgs.Add(1)
+	metrics.Global.ReorgDepthTotal.Add(uint64(reorgDepth))
 
 	// Remove old main chain entries above fork.
 	for h := forkParentHeight + 1; h <= c.tipHeight; h++ {
@@ -386,19 +393,19 @@ func (c *Chain) processOrphans(parentHash types.Hash) {
 			}
 
 			if err := c.engine.ValidateHeader(&orphan.Header, parentHeader, newHeight, c.params); err != nil {
-				log.Printf("[chain] orphan %s failed header validation: %v", blockHash.ReverseString(), err)
+				logging.L.Debug("orphan failed header validation", "component", "chain", "hash", blockHash.ReverseString(), "error", err)
 				continue
 			}
 
 			// Validate timestamp (same check as normal block processing).
 			nowUnix := uint32(time.Now().Unix())
 			if err := consensus.ValidateHeaderTimestamp(&orphan.Header, parentHeader, nowUnix, c.getAncestorUnsafe, parentHeight, c.params); err != nil {
-				log.Printf("[chain] orphan %s failed timestamp validation: %v", blockHash.ReverseString(), err)
+				logging.L.Debug("orphan failed timestamp validation", "component", "chain", "hash", blockHash.ReverseString(), "error", err)
 				continue
 			}
 
 			if err := c.engine.ValidateBlock(orphan, newHeight, c.params); err != nil {
-				log.Printf("[chain] orphan %s failed block validation: %v", blockHash.ReverseString(), err)
+				logging.L.Debug("orphan failed block validation", "component", "chain", "hash", blockHash.ReverseString(), "error", err)
 				continue
 			}
 
@@ -413,10 +420,10 @@ func (c *Chain) processOrphans(parentHash types.Hash) {
 				_ = c.extendChain(blockHash, newHeight, newWork)
 			} else if newWork.Cmp(c.tipWork) > 0 {
 				if err := c.reorg(blockHash, newHeight, newWork); err != nil {
-					log.Printf("[chain] orphan reorg to %s failed: %v", blockHash.ReverseString(), err)
+					logging.L.Warn("orphan reorg failed", "component", "chain", "hash", blockHash.ReverseString(), "error", err)
 					continue
 				}
-				log.Printf("[chain] reorg to %s at height %d (from orphan resolution)", blockHash.ReverseString(), newHeight)
+				logging.L.Info("reorg from orphan resolution", "component", "chain", "hash", blockHash.ReverseString(), "height", newHeight)
 			} else {
 				_ = c.store.PutBlockIndex(blockHash, newHeight)
 			}

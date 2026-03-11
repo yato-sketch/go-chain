@@ -23,7 +23,10 @@ Fairchain is a minimal but real blockchain node written in Go. It implements Nak
 - **Wire protocol**: Deterministic binary message encoding (version, verack, ping/pong, inv, getdata, block, tx, getblocks, addr)
 - **RPC API**: Local HTTP JSON API (getinfo, getblockcount, getbestblockhash, getpeerinfo, getblock, submitblock, getmempoolinfo)
 - **CLI**: Command-line tool for querying node status
-- **Tests**: 43 passing tests covering serialization, hashing, merkle roots, compact bits, genesis mining, block validation, chain operations, protocol encoding, and storage
+- **Tests**: 43 passing unit tests + 9 fuzz targets covering serialization, hashing, merkle roots, compact bits, genesis mining, block validation, chain operations, protocol encoding, and storage
+- **Adversarial testing**: Dedicated tool and 16-phase chaos test covering invalid PoW, corrupted merkle roots, duplicate blocks, time-warp attacks, orphan floods, inflated coinbase, and empty blocks
+- **Structured logging**: `log/slog` with configurable log levels (`--log-level debug|info|warn|error`)
+- **Metrics**: Atomic counters for blocks accepted/rejected/mined, reorgs, peers, orphans; exposed via `/metrics` RPC endpoint
 
 ## What Is Not Implemented Yet
 
@@ -45,10 +48,11 @@ Fairchain is a minimal but real blockchain node written in Go. It implements Nak
 make build
 ```
 
-Produces three binaries in `bin/`:
+Produces four binaries in `bin/`:
 - `fairchain-node` — the full node
 - `fairchain-genesis` — genesis block mining tool
 - `fairchain-cli` — CLI query tool
+- `fairchain-adversary` — adversarial block generator for chaos/security testing
 
 ## Quick Start
 

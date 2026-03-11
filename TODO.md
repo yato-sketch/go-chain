@@ -54,18 +54,19 @@
 - [x] RPC API: getinfo, getblockcount, getbestblockhash, getpeerinfo, getblock, submitblock, getmempoolinfo
 - [x] CLI query tool
 
-## Phase 4: Hardening & Testing (IN PROGRESS)
+## Phase 4: Hardening & Testing (COMPLETE)
 
 - [x] Chain manager with orphan pool and basic reorg
 - [x] Chain integration tests (init, process, multi-block, duplicate, orphan)
-- [ ] Multi-node integration/simulation harness
-- [ ] Stress test: rapid block production and propagation
-- [ ] Fuzz testing for serialization/deserialization
-- [ ] Peer disconnect and reconnect resilience testing
-- [ ] Chain reorg with competing forks test
-- [ ] Graceful shutdown verification
-- [ ] Logging improvements (structured logging, log levels)
-- [ ] Metrics collection skeleton
+- [x] Multi-node chaos test (10-node, 16 phases: network chaos + adversarial attacks)
+- [x] Adversarial testing tool (bad nonce, bad merkle, duplicate, time-warp, orphan flood, inflated coinbase, empty block)
+- [x] Stress test: rapid block production, kill/restart chaos, seed swaps
+- [x] Fuzz testing for Block, Transaction, BlockHeader, VarInt, and wire protocol messages
+- [x] Peer disconnect and reconnect resilience testing (kill/restart phases)
+- [x] Chain reorg with competing forks (natural reorgs in chaos test)
+- [x] Graceful shutdown: explicit ordered teardown with per-stage logging
+- [x] Structured logging (log/slog) with --log-level flag (debug/info/warn/error)
+- [x] Metrics collection skeleton: atomic counters for blocks, peers, reorgs, orphans, rejections + /metrics RPC endpoint
 
 ## Phase 5: UTXO & Transaction Validation
 

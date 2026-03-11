@@ -4,12 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"net/http"
 
 	"github.com/fairchain/fairchain/internal/chain"
 	"github.com/fairchain/fairchain/internal/crypto"
+	"github.com/fairchain/fairchain/internal/logging"
 	"github.com/fairchain/fairchain/internal/mempool"
+	"github.com/fairchain/fairchain/internal/metrics"
 	"github.com/fairchain/fairchain/internal/p2p"
 	"github.com/fairchain/fairchain/internal/params"
 	"github.com/fairchain/fairchain/internal/types"
@@ -43,6 +44,7 @@ func New(addr string, c *chain.Chain, mp *mempool.Mempool, pm *p2p.Manager, p *p
 	mux.HandleFunc("/submitblock", s.handleSubmitBlock)
 	mux.HandleFunc("/getmempoolinfo", s.handleGetMempoolInfo)
 	mux.HandleFunc("/getblockchaininfo", s.handleGetBlockchainInfo)
+	mux.HandleFunc("/metrics", s.handleMetrics)
 
 	s.server = &http.Server{
 		Addr:    addr,
@@ -54,10 +56,10 @@ func New(addr string, c *chain.Chain, mp *mempool.Mempool, pm *p2p.Manager, p *p
 
 // Start begins serving RPC requests.
 func (s *Server) Start() error {
-	log.Printf("[rpc] listening on %s", s.server.Addr)
+	logging.L.Info("RPC listening", "component", "rpc", "addr", s.server.Addr)
 	go func() {
 		if err := s.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Printf("[rpc] server error: %v", err)
+			logging.L.Error("RPC server error", "component", "rpc", "error", err)
 		}
 	}()
 	return nil
@@ -204,6 +206,10 @@ func (s *Server) handleGetBlockchainInfo(w http.ResponseWriter, r *http.Request)
 		"mempool_size":           s.mempool.Count(),
 	}
 	writeJSON(w, resp)
+}
+
+func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, metrics.Global.Snapshot())
 }
 
 func writeJSON(w http.ResponseWriter, data interface{}) {

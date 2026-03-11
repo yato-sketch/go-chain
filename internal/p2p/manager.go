@@ -6,14 +6,15 @@ import (
 	"crypto/rand"
 	"encoding/binary"
 	"fmt"
-	"log"
 	"net"
 	"sync"
 	"time"
 
 	"github.com/fairchain/fairchain/internal/chain"
 	"github.com/fairchain/fairchain/internal/crypto"
+	"github.com/fairchain/fairchain/internal/logging"
 	"github.com/fairchain/fairchain/internal/mempool"
+	"github.com/fairchain/fairchain/internal/metrics"
 	"github.com/fairchain/fairchain/internal/params"
 	"github.com/fairchain/fairchain/internal/protocol"
 	"github.com/fairchain/fairchain/internal/store"
@@ -72,7 +73,7 @@ func (m *Manager) Start(ctx context.Context) error {
 		return fmt.Errorf("listen on %s: %w", m.listenAddr, err)
 	}
 	m.listener = ln
-	log.Printf("[p2p] listening on %s", m.listenAddr)
+	logging.L.Info("listening", "component", "p2p", "addr", m.listenAddr)
 
 	go m.acceptLoop(ctx)
 	go m.connectSeeds(ctx)
@@ -186,7 +187,7 @@ func (m *Manager) acceptLoop(ctx context.Context) {
 			case <-ctx.Done():
 				return
 			default:
-				log.Printf("[p2p] accept error: %v", err)
+				logging.L.Error("accept error", "component", "p2p", "error", err)
 				continue
 			}
 		}
@@ -293,12 +294,14 @@ func (m *Manager) handlePeer(ctx context.Context, peer *Peer) {
 		m.mu.Lock()
 		delete(m.peers, peer.Addr())
 		m.mu.Unlock()
-		log.Printf("[p2p] disconnected from %s", peer.Addr())
+		logging.L.Debug("peer disconnected", "component", "p2p", "addr", peer.Addr())
+		metrics.Global.PeersDisconnects.Add(1)
+		metrics.Global.PeersConnected.Add(-1)
 	}()
 
 	// Perform handshake.
 	if err := m.handshake(peer); err != nil {
-		log.Printf("[p2p] handshake failed with %s: %v", peer.Addr(), err)
+		logging.L.Warn("handshake failed", "component", "p2p", "addr", peer.Addr(), "error", err)
 		return
 	}
 
@@ -310,7 +313,8 @@ func (m *Manager) handlePeer(ctx context.Context, peer *Peer) {
 	m.mu.Unlock()
 	m.peerStore.PutPeer(peer.Addr())
 
-	log.Printf("[p2p] connected to %s (version=%d height=%d)", peer.Addr(), peer.Version().Version, peer.Version().StartHeight)
+	logging.L.Info("peer connected", "component", "p2p", "addr", peer.Addr(), "version", peer.Version().Version, "height", peer.Version().StartHeight)
+	metrics.Global.PeersConnected.Add(1)
 
 	// Start write loop.
 	go peer.WriteLoop()
@@ -333,7 +337,7 @@ func (m *Manager) handlePeer(ctx context.Context, peer *Peer) {
 
 		hdr, payload, err := peer.ReadMessage()
 		if err != nil {
-			log.Printf("[p2p] read error from %s: %v", peer.Addr(), err)
+			logging.L.Debug("read error", "component", "p2p", "addr", peer.Addr(), "error", err)
 			return
 		}
 
@@ -495,7 +499,7 @@ func (m *Manager) handleMessage(ctx context.Context, peer *Peer, hdr *protocol.M
 	case protocol.CmdBlock:
 		var block types.Block
 		if err := block.Deserialize(r); err != nil {
-			log.Printf("[p2p] bad block from %s: %v", peer.Addr(), err)
+			logging.L.Warn("bad block payload", "component", "p2p", "addr", peer.Addr(), "error", err)
 			return
 		}
 		m.handleBlock(peer, &block)
@@ -503,7 +507,7 @@ func (m *Manager) handleMessage(ctx context.Context, peer *Peer, hdr *protocol.M
 	case protocol.CmdTx:
 		var tx types.Transaction
 		if err := tx.Deserialize(r); err != nil {
-			log.Printf("[p2p] bad tx from %s: %v", peer.Addr(), err)
+			logging.L.Warn("bad tx payload", "component", "p2p", "addr", peer.Addr(), "error", err)
 			return
 		}
 		m.handleTx(peer, &tx)
@@ -525,7 +529,7 @@ func (m *Manager) handleMessage(ctx context.Context, peer *Peer, hdr *protocol.M
 		}
 
 	default:
-		log.Printf("[p2p] unknown command %q from %s", cmd, peer.Addr())
+		logging.L.Debug("unknown command", "component", "p2p", "cmd", cmd, "addr", peer.Addr())
 	}
 }
 
@@ -594,7 +598,7 @@ func (m *Manager) handleBlock(peer *Peer, block *types.Block) {
 
 	height, err := m.chain.ProcessBlock(block)
 	if err != nil {
-		log.Printf("[p2p] rejected block %s from %s: %v", blockHash.ReverseString(), peer.Addr(), err)
+		logging.L.Warn("block rejected", "component", "p2p", "hash", blockHash.ReverseString(), "addr", peer.Addr(), "error", err)
 		return
 	}
 
@@ -605,7 +609,7 @@ func (m *Manager) handleBlock(peer *Peer, block *types.Block) {
 	}
 	m.mu.Unlock()
 
-	log.Printf("[p2p] accepted block %s at height %d from %s", blockHash.ReverseString(), height, peer.Addr())
+	logging.L.Info("block accepted from peer", "component", "p2p", "hash", blockHash.ReverseString(), "height", height, "addr", peer.Addr())
 	m.BroadcastBlock(blockHash, block)
 }
 

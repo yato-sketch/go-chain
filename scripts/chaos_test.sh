@@ -2,21 +2,27 @@
 set -uo pipefail
 
 # ==========================================================================
-# FAIRCHAIN 10-NODE CHAOS TEST
+# FAIRCHAIN 10-NODE CHAOS + ADVERSARIAL TEST
 #
 # Architecture (mirrors real networks):
 #   Nodes 0,1  = SEED nodes (relay-only, no mining — network backbone)
 #   Nodes 2-9  = MINER nodes (connect to seeds, subject to chaos)
 #
-# Seed nodes bootstrap the network. Miners connect to seeds, discover the
-# chain state from them, and mine. Blocks propagate through seeds to all
-# miners. Shallow reorgs are natural and expected; convergence happens
-# via longest-chain rule.
+# Phases 0-9:  Network chaos (kill/restart nodes, seed swaps, partitions)
+# Phases 10-15: Adversarial attacks against the RPC submitblock endpoint:
+#   10 — Bad nonce (invalid PoW) and corrupted merkle roots
+#   11 — Duplicate block resubmission
+#   12 — Time-warp attacks (far-future and far-past timestamps)
+#   13 — Orphan flood (blocks referencing random nonexistent parents)
+#   14 — Inflated coinbase reward and empty (no-tx) blocks
+#   15 — Post-attack convergence verification
+# Phase 16:   Final retarget and consensus verification
 #
 # Testnet params: 5s target blocks, retarget every 20 blocks.
 # ==========================================================================
 
 BIN="$(cd "$(dirname "$0")/.." && pwd)/bin/fairchain-node"
+ADV="$(cd "$(dirname "$0")/.." && pwd)/bin/fairchain-adversary"
 BASEDIR="/tmp/fairchain-chaos"
 NUM_NODES=10
 SEED_NODES=(0 1)
@@ -264,10 +270,11 @@ run_check() { if ! "$@"; then ((FAILURES++)); fi; }
 # ============================================================
 
 echo ""
-echo "════════════════════════════════════════════════════"
-echo " FAIRCHAIN 10-NODE CHAOS TEST"
-echo " 2 Seed Nodes (relay) + 8 Miners · 5s blocks · retarget/20"
-echo "════════════════════════════════════════════════════"
+echo "════════════════════════════════════════════════════════════════"
+echo " FAIRCHAIN 10-NODE CHAOS + ADVERSARIAL TEST"
+echo " 2 Seeds + 8 Miners · 5s blocks · retarget/20"
+echo " Phases 0-9: Network chaos   |   Phases 10-15: Adversarial"
+echo "════════════════════════════════════════════════════════════════"
 
 # ── Phase 0: Clean slate ────────────────────────────────────
 header "Phase 0: Clean Environment"
@@ -394,8 +401,98 @@ wait_for_convergence 30 "Phase 9"
 print_cluster_status "After Rapid Chaos"
 run_check check_consensus "Phase 9"
 
-# ── Phase 10: Final summary ────────────────────────────────
-header "Phase 10: Final Retarget & Consensus Verification"
+# ── Phase 10: ADVERSARIAL — Bad Nonce & Bad Merkle ─────────
+header "Phase 10: ADVERSARIAL — Submit blocks with invalid PoW and corrupted merkle roots"
+
+SEED_RPC="http://127.0.0.1:$((BASE_RPC_PORT + 0))"
+MINER_RPC="http://127.0.0.1:$((BASE_RPC_PORT + 2))"
+
+adversary_check() {
+    local label=$1
+    local attack=$2
+    local rpc=$3
+    local extra_args=${4:-}
+
+    log "  Running attack: $attack against $rpc"
+    local result
+    result=$("$ADV" -attack "$attack" -rpc "$rpc" $extra_args 2>&1) || true
+
+    local rejected
+    rejected=$(echo "$result" | python3 -c "import sys,json;r=json.load(sys.stdin);print('true' if all(x['rejected'] for x in r) else 'false')" 2>/dev/null || echo "parse_error")
+
+    if [ "$rejected" = "true" ]; then
+        pass "$label: attack '$attack' correctly REJECTED"
+        return 0
+    elif [ "$rejected" = "false" ]; then
+        fail "$label: attack '$attack' was ACCEPTED (should have been rejected)"
+        log "  Response: $result"
+        return 1
+    else
+        warn "$label: could not parse adversary response for '$attack'"
+        log "  Raw output: $result"
+        return 1
+    fi
+}
+
+run_check adversary_check "Phase 10a" "bad-nonce" "$SEED_RPC"
+run_check adversary_check "Phase 10b" "bad-merkle" "$SEED_RPC"
+run_check adversary_check "Phase 10c" "bad-nonce" "$MINER_RPC"
+run_check adversary_check "Phase 10d" "bad-merkle" "$MINER_RPC"
+
+print_cluster_status "After Bad PoW/Merkle Attacks"
+run_check check_consensus "Phase 10 (post bad-nonce/merkle)"
+
+# ── Phase 11: ADVERSARIAL — Duplicate Block Submission ─────
+header "Phase 11: ADVERSARIAL — Resubmit already-accepted blocks"
+
+run_check adversary_check "Phase 11a" "duplicate" "$SEED_RPC"
+run_check adversary_check "Phase 11b" "duplicate" "$MINER_RPC"
+
+run_check check_consensus "Phase 11 (post duplicate)"
+
+# ── Phase 12: ADVERSARIAL — Time-Warp Attacks ─────────────
+header "Phase 12: ADVERSARIAL — Submit blocks with invalid timestamps"
+
+run_check adversary_check "Phase 12a" "time-warp-future" "$SEED_RPC"
+run_check adversary_check "Phase 12b" "time-warp-past" "$SEED_RPC"
+run_check adversary_check "Phase 12c" "time-warp-future" "$MINER_RPC"
+run_check adversary_check "Phase 12d" "time-warp-past" "$MINER_RPC"
+
+print_cluster_status "After Time-Warp Attacks"
+run_check check_consensus "Phase 12 (post time-warp)"
+
+# ── Phase 13: ADVERSARIAL — Orphan Flood ──────────────────
+header "Phase 13: ADVERSARIAL — Flood nodes with orphan blocks (random parents)"
+
+run_check adversary_check "Phase 13a" "orphan-flood" "$SEED_RPC" "-count 50"
+run_check adversary_check "Phase 13b" "orphan-flood" "$MINER_RPC" "-count 50"
+
+log "Waiting 10s to verify nodes remain healthy after orphan flood..."
+sleep 10
+print_cluster_status "After Orphan Flood"
+run_check check_consensus "Phase 13 (post orphan-flood)"
+
+# ── Phase 14: ADVERSARIAL — Inflated Coinbase & Empty Block ─
+header "Phase 14: ADVERSARIAL — Inflated coinbase reward and empty (no-tx) block"
+
+run_check adversary_check "Phase 14a" "inflated-coinbase" "$SEED_RPC"
+run_check adversary_check "Phase 14b" "empty-block" "$SEED_RPC"
+run_check adversary_check "Phase 14c" "inflated-coinbase" "$MINER_RPC"
+run_check adversary_check "Phase 14d" "empty-block" "$MINER_RPC"
+
+print_cluster_status "After Inflated Coinbase & Empty Block"
+run_check check_consensus "Phase 14 (post inflated/empty)"
+
+# ── Phase 15: Post-Attack Convergence Verification ─────────
+header "Phase 15: Post-Attack Convergence (mining continues despite attacks)"
+log "Letting cluster mine for 30s after all adversarial attacks..."
+sleep 30
+wait_for_convergence 30 "Phase 15 post-attack convergence" 3
+print_cluster_status "Post-Attack Steady State"
+run_check check_consensus "Phase 15 (post-attack steady state)"
+
+# ── Phase 16: Final summary ────────────────────────────────
+header "Phase 16: Final Retarget & Consensus Verification"
 for i in "${SEED_NODES[@]}"; do
     if is_alive "$i"; then
         rpc=$((BASE_RPC_PORT + i))

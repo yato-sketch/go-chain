@@ -11,7 +11,7 @@ The baseline uses Nakamoto-style proof-of-work. All consensus-critical code is e
 Single-binary node architecture with clean package separation:
 
 ```
-cmd/           → Entrypoints (node, genesis tool, CLI)
+cmd/           → Entrypoints (node, genesis tool, CLI, adversary tool)
 internal/      → All library code (not importable externally)
   types/       → Consensus structs, canonical serialization
   crypto/      → Hashing, merkle, target math
@@ -27,6 +27,9 @@ internal/      → All library code (not importable externally)
   protocol/    → Wire message definitions, binary encoding
   rpc/         → Local HTTP JSON API
   config/      → Config loading
+  logging/     → Structured logging (log/slog wrapper)
+  metrics/     → Atomic counters for node activity
+  version/     → Centralized version constants
   util/        → Non-consensus helpers
 ```
 
@@ -201,9 +204,14 @@ Genesis config structure:
 - Block and transaction propagation
 - Initial block sync
 - Peer address gossip and persistence
-- Local HTTP JSON RPC API (7 endpoints)
+- Local HTTP JSON RPC API (8 endpoints including /metrics)
 - CLI query tool
-- 43 passing tests
+- Adversarial block generator (8 attack types)
+- 43 passing unit tests + 9 fuzz targets
+- 16-phase chaos test (network chaos + adversarial attacks)
+- Structured logging (log/slog) with configurable levels
+- Metrics skeleton: atomic counters for blocks, peers, reorgs, orphans
+- Graceful shutdown with ordered teardown
 
 ## 9. What Is Stubbed but Planned
 
@@ -237,10 +245,10 @@ Genesis config structure:
 
 ## 11. Exact Next Recommended Tasks
 
-### Immediate (Phase 4 completion)
-1. **Multi-node simulation harness**: Write a test that starts 2-3 nodes in-process, connects them, mines on one, and verifies propagation.
+### Immediate (Phase 4 — COMPLETE)
+1. ~~Multi-node simulation harness~~ → 16-phase chaos test with 10 nodes + adversarial tool
 2. **Pre-compute genesis hashes**: Run the genesis miner for each network and hardcode the results in `networks.go`.
-3. **Structured logging**: Replace `log.Printf` with a leveled logger (slog from stdlib).
+3. ~~Structured logging~~ → Migrated to log/slog with --log-level flag
 
 ### Short-term (Phase 5)
 4. **UTXO set**: Implement an in-memory UTXO set backed by a bbolt bucket. Track creates/spends per block for reorg rollback.
