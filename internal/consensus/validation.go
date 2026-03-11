@@ -1,0 +1,140 @@
+package consensus
+
+import (
+	"fmt"
+	"time"
+
+	"github.com/fairchain/fairchain/internal/crypto"
+	"github.com/fairchain/fairchain/internal/params"
+	"github.com/fairchain/fairchain/internal/types"
+)
+
+// ValidateBlockStructure performs consensus checks on block structure that are
+// independent of the specific consensus engine:
+//   - block must have at least one transaction
+//   - first transaction must be coinbase
+//   - no other transaction may be coinbase
+//   - merkle root must match
+//   - block size within limits
+//   - no duplicate transaction IDs
+//   - coinbase output value <= subsidy
+func ValidateBlockStructure(block *types.Block, height uint32, p *params.ChainParams) error {
+	if len(block.Transactions) == 0 {
+		return fmt.Errorf("block has no transactions")
+	}
+
+	if !block.Transactions[0].IsCoinbase() {
+		return fmt.Errorf("first transaction is not coinbase")
+	}
+
+	for i := 1; i < len(block.Transactions); i++ {
+		if block.Transactions[i].IsCoinbase() {
+			return fmt.Errorf("transaction %d is an unexpected coinbase", i)
+		}
+	}
+
+	if uint32(len(block.Transactions)) > p.MaxBlockTxCount {
+		return fmt.Errorf("block has %d transactions, max %d", len(block.Transactions), p.MaxBlockTxCount)
+	}
+
+	// Verify merkle root.
+	merkle, err := crypto.ComputeMerkleRoot(block.Transactions)
+	if err != nil {
+		return fmt.Errorf("compute merkle root: %w", err)
+	}
+	if merkle != block.Header.MerkleRoot {
+		return fmt.Errorf("merkle root mismatch: header=%s computed=%s", block.Header.MerkleRoot, merkle)
+	}
+
+	// Check block serialized size.
+	blockBytes, err := block.SerializeToBytes()
+	if err != nil {
+		return fmt.Errorf("serialize block for size check: %w", err)
+	}
+	if uint32(len(blockBytes)) > p.MaxBlockSize {
+		return fmt.Errorf("block size %d exceeds max %d", len(blockBytes), p.MaxBlockSize)
+	}
+
+	// Check for duplicate transaction IDs.
+	txIDs := make(map[types.Hash]struct{}, len(block.Transactions))
+	for i := range block.Transactions {
+		txID, err := crypto.HashTransaction(&block.Transactions[i])
+		if err != nil {
+			return fmt.Errorf("hash tx %d: %w", i, err)
+		}
+		if _, exists := txIDs[txID]; exists {
+			return fmt.Errorf("duplicate transaction ID %s at index %d", txID, i)
+		}
+		txIDs[txID] = struct{}{}
+	}
+
+	// Validate coinbase output value.
+	subsidy := p.CalcSubsidy(height)
+	var coinbaseValue uint64
+	for _, out := range block.Transactions[0].Outputs {
+		coinbaseValue += out.Value
+	}
+	if coinbaseValue > subsidy {
+		return fmt.Errorf("coinbase value %d exceeds subsidy %d at height %d", coinbaseValue, subsidy, height)
+	}
+
+	return nil
+}
+
+// ValidateHeaderTimestamp checks the block timestamp against basic rules.
+// For "prev+1": timestamp must be strictly greater than parent.
+// For "median-11": timestamp must be greater than the median of the last 11 blocks.
+// In both cases, timestamp must not be more than MaxTimeFutureDrift ahead of the provided "now".
+func ValidateHeaderTimestamp(header *types.BlockHeader, parent *types.BlockHeader, nowUnix uint32, getAncestor func(height uint32) *types.BlockHeader, tipHeight uint32, p *params.ChainParams) error {
+	maxFuture := nowUnix + uint32(p.MaxTimeFutureDrift/time.Second)
+	if header.Timestamp > maxFuture {
+		return fmt.Errorf("block timestamp %d too far in future (max %d)", header.Timestamp, maxFuture)
+	}
+
+	switch p.MinTimestampRule {
+	case "prev+1":
+		if header.Timestamp <= parent.Timestamp {
+			return fmt.Errorf("block timestamp %d must be > parent %d", header.Timestamp, parent.Timestamp)
+		}
+	case "median-11":
+		median := calcMedianTimePast(tipHeight, getAncestor)
+		if header.Timestamp <= median {
+			return fmt.Errorf("block timestamp %d must be > median time past %d", header.Timestamp, median)
+		}
+	default:
+		return fmt.Errorf("unknown timestamp rule: %s", p.MinTimestampRule)
+	}
+
+	return nil
+}
+
+// calcMedianTimePast computes the median of the last 11 block timestamps.
+func calcMedianTimePast(tipHeight uint32, getAncestor func(height uint32) *types.BlockHeader) uint32 {
+	const medianCount = 11
+	timestamps := make([]uint32, 0, medianCount)
+
+	for i := uint32(0); i < medianCount && tipHeight >= i; i++ {
+		h := getAncestor(tipHeight - i)
+		if h == nil {
+			break
+		}
+		timestamps = append(timestamps, h.Timestamp)
+	}
+
+	if len(timestamps) == 0 {
+		return 0
+	}
+
+	// Sort timestamps (insertion sort on small slice).
+	for i := 1; i < len(timestamps); i++ {
+		key := timestamps[i]
+		j := i - 1
+		for j >= 0 && timestamps[j] > key {
+			timestamps[j+1] = timestamps[j]
+			j--
+		}
+		timestamps[j+1] = key
+	}
+
+	return timestamps[len(timestamps)/2]
+}

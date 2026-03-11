@@ -1,0 +1,12 @@
+{
+  "network": "regtest",
+  "data_dir": "/tmp/fairchain-regtest",
+  "listen_addr": "0.0.0.0:19444",
+  "rpc_addr": "127.0.0.1:19445",
+  "seed_peers": [],
+  "max_inbound": 25,
+  "max_outbound": 8,
+  "mining_enabled": false,
+  "mining_addr": "",
+  "log_level": "info"
+}

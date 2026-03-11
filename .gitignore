@@ -1,0 +1,34 @@
+# Binaries
+bin/
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Go build cache
+*.test
+*.out
+
+# IDE / Editor
+.idea/
+.cursor/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Node data (local chains, databases)
+*.db
+data/
+
+# Temporary test data
+/tmp/
+
+# Environment / secrets
+.env
+*.pem
+*.key
+credentials.json
