@@ -1,7 +1,7 @@
 package params
 
 import (
-	"github.com/fairchain/fairchain/internal/types"
+	"github.com/bams-repo/fairchain/internal/types"
 )
 
 // GenesisConfig holds the inputs needed to construct a genesis block.

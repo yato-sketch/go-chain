@@ -1,8 +1,8 @@
 package consensus
 
 import (
-	"github.com/fairchain/fairchain/internal/params"
-	"github.com/fairchain/fairchain/internal/types"
+	"github.com/bams-repo/fairchain/internal/params"
+	"github.com/bams-repo/fairchain/internal/types"
 )
 
 // Engine defines the pluggable consensus interface.
@@ -21,8 +21,9 @@ import (
 //   - networking
 type Engine interface {
 	// ValidateHeader checks that the header satisfies consensus rules
-	// (e.g., PoW target, timestamp bounds) given the parent header and params.
-	ValidateHeader(header *types.BlockHeader, parent *types.BlockHeader, height uint32, p *params.ChainParams) error
+	// (e.g., PoW target, timestamp bounds, correct difficulty) given the parent header and params.
+	// getAncestor returns the header at a given main-chain height (needed for difficulty calculation).
+	ValidateHeader(header *types.BlockHeader, parent *types.BlockHeader, height uint32, getAncestor func(uint32) *types.BlockHeader, p *params.ChainParams) error
 
 	// ValidateBlock checks block-level consensus rules: coinbase, merkle root,
 	// transaction ordering, size limits, etc.

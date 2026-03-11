@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/fairchain/fairchain/internal/types"
+	"github.com/bams-repo/fairchain/internal/types"
 )
 
 func TestBoltStoreBlockRoundtrip(t *testing.T) {

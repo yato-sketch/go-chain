@@ -5,10 +5,10 @@ import (
 	"math/big"
 	"time"
 
-	"github.com/fairchain/fairchain/internal/consensus"
-	"github.com/fairchain/fairchain/internal/crypto"
-	"github.com/fairchain/fairchain/internal/params"
-	"github.com/fairchain/fairchain/internal/types"
+	"github.com/bams-repo/fairchain/internal/consensus"
+	"github.com/bams-repo/fairchain/internal/crypto"
+	"github.com/bams-repo/fairchain/internal/params"
+	"github.com/bams-repo/fairchain/internal/types"
 )
 
 // Engine implements the baseline Nakamoto-style proof-of-work consensus.
@@ -22,12 +22,17 @@ func (e *Engine) Name() string { return "pow" }
 
 // ValidateHeader checks PoW-specific header rules:
 //   - previous block hash matches parent
+//   - bits match expected difficulty for this height
 //   - PoW hash meets target
-//   - bits match expected difficulty
-func (e *Engine) ValidateHeader(header *types.BlockHeader, parent *types.BlockHeader, height uint32, p *params.ChainParams) error {
+func (e *Engine) ValidateHeader(header *types.BlockHeader, parent *types.BlockHeader, height uint32, getAncestor func(uint32) *types.BlockHeader, p *params.ChainParams) error {
 	parentHash := crypto.HashBlockHeader(parent)
 	if header.PrevBlock != parentHash {
 		return fmt.Errorf("prev block hash mismatch: header=%s expected=%s", header.PrevBlock, parentHash)
+	}
+
+	expectedBits := e.CalcNextBits(parent, height-1, getAncestor, p)
+	if header.Bits != expectedBits {
+		return fmt.Errorf("incorrect difficulty bits at height %d: got 0x%08x, expected 0x%08x", height, header.Bits, expectedBits)
 	}
 
 	headerHash := crypto.HashBlockHeader(header)

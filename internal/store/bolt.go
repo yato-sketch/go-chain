@@ -5,7 +5,7 @@ import (
 	"encoding/binary"
 	"fmt"
 
-	"github.com/fairchain/fairchain/internal/types"
+	"github.com/bams-repo/fairchain/internal/types"
 	bolt "go.etcd.io/bbolt"
 )
 

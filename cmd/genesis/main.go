@@ -7,9 +7,9 @@ import (
 	"os"
 	"time"
 
-	"github.com/fairchain/fairchain/internal/consensus/pow"
-	"github.com/fairchain/fairchain/internal/crypto"
-	fcparams "github.com/fairchain/fairchain/internal/params"
+	"github.com/bams-repo/fairchain/internal/consensus/pow"
+	"github.com/bams-repo/fairchain/internal/crypto"
+	fcparams "github.com/bams-repo/fairchain/internal/params"
 )
 
 func main() {

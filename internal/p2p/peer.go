@@ -11,8 +11,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/fairchain/fairchain/internal/protocol"
-	"github.com/fairchain/fairchain/internal/types"
+	"github.com/bams-repo/fairchain/internal/protocol"
+	"github.com/bams-repo/fairchain/internal/types"
 )
 
 // Peer represents a connected remote node.

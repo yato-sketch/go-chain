@@ -4,9 +4,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fairchain/fairchain/internal/crypto"
-	fcparams "github.com/fairchain/fairchain/internal/params"
-	"github.com/fairchain/fairchain/internal/types"
+	"github.com/bams-repo/fairchain/internal/crypto"
+	fcparams "github.com/bams-repo/fairchain/internal/params"
+	"github.com/bams-repo/fairchain/internal/types"
 )
 
 func TestMineGenesisRegtest(t *testing.T) {
@@ -116,7 +116,6 @@ func TestValidateHeader(t *testing.T) {
 	engine := New()
 	p := fcparams.Regtest
 
-	// Build a parent block.
 	parent := types.BlockHeader{
 		Version:   1,
 		Timestamp: 1700000000,
@@ -134,14 +133,14 @@ func TestValidateHeader(t *testing.T) {
 		Nonce:     0,
 	}
 
-	// Mine the child to find valid nonce.
 	target := crypto.CompactToHash(child.Bits)
 	found, _ := engine.SealHeader(&child, target, 10000000)
 	if !found {
 		t.Fatal("could not mine child block")
 	}
 
-	if err := engine.ValidateHeader(&child, &parent, 1, p); err != nil {
+	getAncestor := func(h uint32) *types.BlockHeader { return &parent }
+	if err := engine.ValidateHeader(&child, &parent, 1, getAncestor, p); err != nil {
 		t.Fatalf("ValidateHeader: %v", err)
 	}
 }
@@ -153,12 +152,50 @@ func TestValidateHeaderBadPrevHash(t *testing.T) {
 	parent := types.BlockHeader{Version: 1, Timestamp: 1700000000, Bits: p.InitialBits}
 	child := types.BlockHeader{
 		Version:   1,
-		PrevBlock: types.Hash{0xFF}, // Wrong parent hash.
+		PrevBlock: types.Hash{0xFF},
 		Timestamp: 1700000001,
 		Bits:      p.InitialBits,
 	}
 
-	if err := engine.ValidateHeader(&child, &parent, 1, p); err == nil {
+	getAncestor := func(h uint32) *types.BlockHeader { return &parent }
+	if err := engine.ValidateHeader(&child, &parent, 1, getAncestor, p); err == nil {
 		t.Fatal("should reject header with wrong prev hash")
+	}
+}
+
+func TestValidateHeaderWrongBits(t *testing.T) {
+	engine := New()
+	p := &fcparams.ChainParams{
+		InitialBits:      0x1e0fffff,
+		MinBits:          0x1e0fffff,
+		NoRetarget:       true,
+		RetargetInterval: 20,
+		TargetTimespan:   20 * time.Minute,
+	}
+
+	parent := types.BlockHeader{
+		Version:   1,
+		Timestamp: 1700000000,
+		Bits:      p.InitialBits,
+	}
+	parentHash := crypto.HashBlockHeader(&parent)
+
+	wrongBits := uint32(0x207fffff)
+	child := types.BlockHeader{
+		Version:   1,
+		PrevBlock: parentHash,
+		Timestamp: 1700000001,
+		Bits:      wrongBits,
+	}
+
+	easyTarget := crypto.CompactToHash(child.Bits)
+	found, _ := engine.SealHeader(&child, easyTarget, 10000000)
+	if !found {
+		t.Fatal("could not mine child with easy bits")
+	}
+
+	getAncestor := func(h uint32) *types.BlockHeader { return &parent }
+	if err := engine.ValidateHeader(&child, &parent, 1, getAncestor, p); err == nil {
+		t.Fatal("should reject header with wrong difficulty bits")
 	}
 }

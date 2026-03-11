@@ -1,7 +1,7 @@
 package crypto
 
 import (
-	"github.com/fairchain/fairchain/internal/types"
+	"github.com/bams-repo/fairchain/internal/types"
 )
 
 // MerkleRoot computes the merkle root of a list of transaction hashes.

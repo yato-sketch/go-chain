@@ -5,13 +5,13 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/fairchain/fairchain/internal/chain"
-	"github.com/fairchain/fairchain/internal/consensus"
-	"github.com/fairchain/fairchain/internal/crypto"
-	"github.com/fairchain/fairchain/internal/logging"
-	"github.com/fairchain/fairchain/internal/mempool"
-	"github.com/fairchain/fairchain/internal/params"
-	"github.com/fairchain/fairchain/internal/types"
+	"github.com/bams-repo/fairchain/internal/chain"
+	"github.com/bams-repo/fairchain/internal/consensus"
+	"github.com/bams-repo/fairchain/internal/crypto"
+	"github.com/bams-repo/fairchain/internal/logging"
+	"github.com/bams-repo/fairchain/internal/mempool"
+	"github.com/bams-repo/fairchain/internal/params"
+	"github.com/bams-repo/fairchain/internal/types"
 )
 
 // Miner builds block templates and searches for valid PoW solutions.
@@ -139,7 +139,11 @@ func (m *Miner) MineOne(ctx context.Context) (*types.Block, error) {
 		}
 
 		if header.Nonce == 0 {
-			header.Timestamp = uint32(time.Now().Unix())
+			now := uint32(time.Now().Unix())
+			if now <= tipHeader.Timestamp {
+				now = tipHeader.Timestamp + 1
+			}
+			header.Timestamp = now
 			merkle, _ = crypto.ComputeMerkleRoot(txs)
 			header.MerkleRoot = merkle
 		}

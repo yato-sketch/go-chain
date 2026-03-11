@@ -6,14 +6,14 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/fairchain/fairchain/internal/chain"
-	"github.com/fairchain/fairchain/internal/crypto"
-	"github.com/fairchain/fairchain/internal/logging"
-	"github.com/fairchain/fairchain/internal/mempool"
-	"github.com/fairchain/fairchain/internal/metrics"
-	"github.com/fairchain/fairchain/internal/p2p"
-	"github.com/fairchain/fairchain/internal/params"
-	"github.com/fairchain/fairchain/internal/types"
+	"github.com/bams-repo/fairchain/internal/chain"
+	"github.com/bams-repo/fairchain/internal/crypto"
+	"github.com/bams-repo/fairchain/internal/logging"
+	"github.com/bams-repo/fairchain/internal/mempool"
+	"github.com/bams-repo/fairchain/internal/metrics"
+	"github.com/bams-repo/fairchain/internal/p2p"
+	"github.com/bams-repo/fairchain/internal/params"
+	"github.com/bams-repo/fairchain/internal/types"
 )
 
 // Server provides a minimal local HTTP JSON API for node status and control.

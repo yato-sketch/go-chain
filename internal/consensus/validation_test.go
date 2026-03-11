@@ -3,9 +3,9 @@ package consensus
 import (
 	"testing"
 
-	"github.com/fairchain/fairchain/internal/crypto"
-	"github.com/fairchain/fairchain/internal/params"
-	"github.com/fairchain/fairchain/internal/types"
+	"github.com/bams-repo/fairchain/internal/crypto"
+	"github.com/bams-repo/fairchain/internal/params"
+	"github.com/bams-repo/fairchain/internal/types"
 )
 
 func makeTestBlock(height uint32, p *params.ChainParams) types.Block {

@@ -1,11 +1,11 @@
 .PHONY: all build test clean node genesis cli adversary
 
-MODULE := github.com/fairchain/fairchain
+MODULE := github.com/bams-repo/fairchain
 BINDIR := bin
 
 all: build
 
-build: node genesis cli adversary
+build: node genesis cli
 
 node:
 	go build -o $(BINDIR)/fairchain-node ./cmd/node

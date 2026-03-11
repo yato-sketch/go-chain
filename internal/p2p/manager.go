@@ -10,16 +10,16 @@ import (
 	"sync"
 	"time"
 
-	"github.com/fairchain/fairchain/internal/chain"
-	"github.com/fairchain/fairchain/internal/crypto"
-	"github.com/fairchain/fairchain/internal/logging"
-	"github.com/fairchain/fairchain/internal/mempool"
-	"github.com/fairchain/fairchain/internal/metrics"
-	"github.com/fairchain/fairchain/internal/params"
-	"github.com/fairchain/fairchain/internal/protocol"
-	"github.com/fairchain/fairchain/internal/store"
-	"github.com/fairchain/fairchain/internal/types"
-	"github.com/fairchain/fairchain/internal/version"
+	"github.com/bams-repo/fairchain/internal/chain"
+	"github.com/bams-repo/fairchain/internal/crypto"
+	"github.com/bams-repo/fairchain/internal/logging"
+	"github.com/bams-repo/fairchain/internal/mempool"
+	"github.com/bams-repo/fairchain/internal/metrics"
+	"github.com/bams-repo/fairchain/internal/params"
+	"github.com/bams-repo/fairchain/internal/protocol"
+	"github.com/bams-repo/fairchain/internal/store"
+	"github.com/bams-repo/fairchain/internal/types"
+	"github.com/bams-repo/fairchain/internal/version"
 )
 
 // Manager handles peer connections, handshakes, and message routing.
@@ -293,6 +293,14 @@ func (m *Manager) handlePeer(ctx context.Context, peer *Peer) {
 		peer.Close()
 		m.mu.Lock()
 		delete(m.peers, peer.Addr())
+		// Recompute bestPeerHeight from remaining peers.
+		var best uint32
+		for _, p := range m.peers {
+			if v := p.Version(); v != nil && v.StartHeight > best {
+				best = v.StartHeight
+			}
+		}
+		m.bestPeerHeight = best
 		m.mu.Unlock()
 		logging.L.Debug("peer disconnected", "component", "p2p", "addr", peer.Addr())
 		metrics.Global.PeersDisconnects.Add(1)

@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/fairchain/fairchain/internal/types"
-	"github.com/fairchain/fairchain/internal/version"
+	"github.com/bams-repo/fairchain/internal/types"
+	"github.com/bams-repo/fairchain/internal/version"
 )
 
 // ProtocolVersion re-exports the canonical wire protocol version from the

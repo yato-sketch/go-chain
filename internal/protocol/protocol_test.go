@@ -4,8 +4,8 @@ import (
 	"bytes"
 	"testing"
 
-	"github.com/fairchain/fairchain/internal/types"
-	"github.com/fairchain/fairchain/internal/version"
+	"github.com/bams-repo/fairchain/internal/types"
+	"github.com/bams-repo/fairchain/internal/version"
 )
 
 func TestVersionMsgRoundtrip(t *testing.T) {

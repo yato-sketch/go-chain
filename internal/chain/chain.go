@@ -8,13 +8,13 @@ import (
 	"sync"
 	"time"
 
-	"github.com/fairchain/fairchain/internal/consensus"
-	"github.com/fairchain/fairchain/internal/crypto"
-	"github.com/fairchain/fairchain/internal/logging"
-	"github.com/fairchain/fairchain/internal/metrics"
-	"github.com/fairchain/fairchain/internal/params"
-	"github.com/fairchain/fairchain/internal/store"
-	"github.com/fairchain/fairchain/internal/types"
+	"github.com/bams-repo/fairchain/internal/consensus"
+	"github.com/bams-repo/fairchain/internal/crypto"
+	"github.com/bams-repo/fairchain/internal/logging"
+	"github.com/bams-repo/fairchain/internal/metrics"
+	"github.com/bams-repo/fairchain/internal/params"
+	"github.com/bams-repo/fairchain/internal/store"
+	"github.com/bams-repo/fairchain/internal/types"
 )
 
 // MaxOrphanBlocks limits the orphan block holding area.
@@ -224,7 +224,7 @@ func (c *Chain) ProcessBlock(block *types.Block) (uint32, error) {
 
 	// Validate header (consensus engine checks).
 	nowUnix := uint32(time.Now().Unix())
-	if err := c.engine.ValidateHeader(&block.Header, parentHeader, newHeight, c.params); err != nil {
+	if err := c.engine.ValidateHeader(&block.Header, parentHeader, newHeight, c.getAncestorUnsafe, c.params); err != nil {
 		return 0, fmt.Errorf("validate header at height %d: %w", newHeight, err)
 	}
 
@@ -238,9 +238,9 @@ func (c *Chain) ProcessBlock(block *types.Block) (uint32, error) {
 		return 0, fmt.Errorf("validate block at height %d: %w", newHeight, err)
 	}
 
-	// Compute new cumulative work.
+	// Compute new cumulative work by walking the actual parent chain.
 	blockWork := crypto.CalcWork(block.Header.Bits)
-	parentWork := c.workAtHeight(parentHeight)
+	parentWork := c.workForParentChain(block.Header.PrevBlock)
 	newWork := new(big.Int).Add(parentWork, blockWork)
 
 	// Store the block.
@@ -254,16 +254,13 @@ func (c *Chain) ProcessBlock(block *types.Block) (uint32, error) {
 		if err := c.extendChain(blockHash, newHeight, newWork); err != nil {
 			return 0, err
 		}
-	} else if newWork.Cmp(c.tipWork) > 0 {
-		// Side chain with more work — reorg.
+	} else if newWork.Cmp(c.tipWork) > 0 || (newWork.Cmp(c.tipWork) == 0 && bytes.Compare(blockHash[:], c.tipHash[:]) < 0) {
+		// Side chain with more work, or equal work with lower hash (deterministic tie-breaker) — reorg.
 		if err := c.reorg(blockHash, newHeight, newWork); err != nil {
 			return 0, fmt.Errorf("reorg to %s: %w", blockHash, err)
 		}
 	} else {
-		// Side chain with less work — store but don't switch.
-		if err := c.store.PutBlockIndex(blockHash, newHeight); err != nil {
-			return 0, err
-		}
+		// Side chain with less (or equal) work — track in memory only.
 		c.heightByHash[blockHash] = newHeight
 	}
 
@@ -392,7 +389,7 @@ func (c *Chain) processOrphans(parentHash types.Hash) {
 				continue
 			}
 
-			if err := c.engine.ValidateHeader(&orphan.Header, parentHeader, newHeight, c.params); err != nil {
+			if err := c.engine.ValidateHeader(&orphan.Header, parentHeader, newHeight, c.getAncestorUnsafe, c.params); err != nil {
 				logging.L.Debug("orphan failed header validation", "component", "chain", "hash", blockHash.ReverseString(), "error", err)
 				continue
 			}
@@ -410,22 +407,26 @@ func (c *Chain) processOrphans(parentHash types.Hash) {
 			}
 
 			blockWork := crypto.CalcWork(orphan.Header.Bits)
-			parentWork := c.workAtHeight(parentHeight)
+			parentWork := c.workForParentChain(orphan.Header.PrevBlock)
 			newWork := new(big.Int).Add(parentWork, blockWork)
 
 			_ = c.store.PutBlock(blockHash, orphan)
-			c.heightByHash[blockHash] = newHeight
 
 			if orphan.Header.PrevBlock == c.tipHash {
-				_ = c.extendChain(blockHash, newHeight, newWork)
-			} else if newWork.Cmp(c.tipWork) > 0 {
+				if err := c.extendChain(blockHash, newHeight, newWork); err != nil {
+					logging.L.Warn("orphan extend failed", "component", "chain", "hash", blockHash.ReverseString(), "error", err)
+					continue
+				}
+			} else if newWork.Cmp(c.tipWork) > 0 || (newWork.Cmp(c.tipWork) == 0 && bytes.Compare(blockHash[:], c.tipHash[:]) < 0) {
+				c.heightByHash[blockHash] = newHeight
 				if err := c.reorg(blockHash, newHeight, newWork); err != nil {
+					delete(c.heightByHash, blockHash)
 					logging.L.Warn("orphan reorg failed", "component", "chain", "hash", blockHash.ReverseString(), "error", err)
 					continue
 				}
 				logging.L.Info("reorg from orphan resolution", "component", "chain", "hash", blockHash.ReverseString(), "height", newHeight)
 			} else {
-				_ = c.store.PutBlockIndex(blockHash, newHeight)
+				c.heightByHash[blockHash] = newHeight
 			}
 
 			queue = append(queue, blockHash)
@@ -433,18 +434,21 @@ func (c *Chain) processOrphans(parentHash types.Hash) {
 	}
 }
 
-func (c *Chain) workAtHeight(height uint32) *big.Int {
+// workForParentChain computes cumulative work by walking backwards from blockHash
+// through its actual parent chain, rather than assuming the main chain.
+func (c *Chain) workForParentChain(blockHash types.Hash) *big.Int {
 	work := big.NewInt(0)
-	for h := uint32(0); h <= height; h++ {
-		hash, ok := c.hashByHeight[h]
-		if !ok {
-			break
-		}
-		header, err := c.store.GetHeader(hash)
+	current := blockHash
+	for {
+		header, err := c.store.GetHeader(current)
 		if err != nil {
 			break
 		}
 		work.Add(work, crypto.CalcWork(header.Bits))
+		if header.PrevBlock.IsZero() {
+			break
+		}
+		current = header.PrevBlock
 	}
 	return work
 }

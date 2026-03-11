@@ -3,7 +3,7 @@ package discovery
 import (
 	"log"
 
-	"github.com/fairchain/fairchain/internal/store"
+	"github.com/bams-repo/fairchain/internal/store"
 )
 
 // Discovery manages peer address discovery from multiple sources.

@@ -3,7 +3,7 @@ package crypto
 import (
 	"crypto/sha256"
 
-	"github.com/fairchain/fairchain/internal/types"
+	"github.com/bams-repo/fairchain/internal/types"
 )
 
 // DoubleSHA256 computes SHA256(SHA256(data)), the standard consensus hash.

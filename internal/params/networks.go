@@ -3,7 +3,7 @@ package params
 import (
 	"time"
 
-	"github.com/fairchain/fairchain/internal/types"
+	"github.com/bams-repo/fairchain/internal/types"
 )
 
 // Mainnet is the primary fairchain network.

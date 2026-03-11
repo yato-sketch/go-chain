@@ -1,14 +1,15 @@
 package chain
 
 import (
+	"bytes"
 	"path/filepath"
 	"testing"
 
-	"github.com/fairchain/fairchain/internal/consensus/pow"
-	"github.com/fairchain/fairchain/internal/crypto"
-	fcparams "github.com/fairchain/fairchain/internal/params"
-	"github.com/fairchain/fairchain/internal/store"
-	"github.com/fairchain/fairchain/internal/types"
+	"github.com/bams-repo/fairchain/internal/consensus/pow"
+	"github.com/bams-repo/fairchain/internal/crypto"
+	fcparams "github.com/bams-repo/fairchain/internal/params"
+	"github.com/bams-repo/fairchain/internal/store"
+	"github.com/bams-repo/fairchain/internal/types"
 )
 
 func setupTestChain(t *testing.T) (*Chain, *fcparams.ChainParams) {
@@ -95,6 +96,55 @@ func mineBlock(t *testing.T, c *Chain, p *fcparams.ChainParams) *types.Block {
 	found, _ := engine.SealHeader(&header, target, 10000000)
 	if !found {
 		t.Fatal("could not mine block")
+	}
+
+	return &types.Block{
+		Header:       header,
+		Transactions: []types.Transaction{coinbase},
+	}
+}
+
+// mineBlockOnParent builds and mines a block on top of a specific parent, not the chain tip.
+// The tag parameter differentiates the coinbase to produce a unique block hash.
+func mineBlockOnParent(t *testing.T, parentHash types.Hash, parentHeader *types.BlockHeader, parentHeight uint32, p *fcparams.ChainParams, tag string) *types.Block {
+	t.Helper()
+
+	newHeight := parentHeight + 1
+	subsidy := p.CalcSubsidy(newHeight)
+
+	heightBytes := make([]byte, 4)
+	types.PutUint32LE(heightBytes, newHeight)
+
+	coinbase := types.Transaction{
+		Version: 1,
+		Inputs: []types.TxInput{
+			{
+				PreviousOutPoint: types.CoinbaseOutPoint,
+				SignatureScript:  append(heightBytes, []byte(tag)...),
+				Sequence:         0xFFFFFFFF,
+			},
+		},
+		Outputs: []types.TxOutput{
+			{Value: subsidy, PkScript: []byte{0x00}},
+		},
+	}
+
+	merkle, _ := crypto.ComputeMerkleRoot([]types.Transaction{coinbase})
+
+	header := types.BlockHeader{
+		Version:    1,
+		PrevBlock:  parentHash,
+		MerkleRoot: merkle,
+		Timestamp:  parentHeader.Timestamp + 1,
+		Bits:       p.InitialBits,
+		Nonce:      0,
+	}
+
+	target := crypto.CompactToHash(header.Bits)
+	engine := pow.New()
+	found, _ := engine.SealHeader(&header, target, 10000000)
+	if !found {
+		t.Fatal("could not mine block on parent")
 	}
 
 	return &types.Block{
@@ -214,5 +264,125 @@ func TestChainOrphan(t *testing.T) {
 	_, tipHeight := c.Tip()
 	if tipHeight < 1 {
 		t.Fatalf("tip height = %d, want >= 1", tipHeight)
+	}
+}
+
+func TestEqualWorkTieBreaker(t *testing.T) {
+	c, p := setupTestChain(t)
+
+	// Mine block 1 on the chain.
+	block1 := mineBlock(t, c, p)
+	_, err := c.ProcessBlock(block1)
+	if err != nil {
+		t.Fatalf("ProcessBlock(block1): %v", err)
+	}
+
+	// Now create two competing blocks at height 2 on top of block1.
+	tipHash, tipHeight := c.Tip()
+	tipHeader, _ := c.TipHeader()
+
+	blockA := mineBlockOnParent(t, tipHash, tipHeader, tipHeight, p, "fork-A")
+	blockB := mineBlockOnParent(t, tipHash, tipHeader, tipHeight, p, "fork-B")
+
+	hashA := crypto.HashBlockHeader(&blockA.Header)
+	hashB := crypto.HashBlockHeader(&blockB.Header)
+
+	// Determine which has the lower hash — that should be the winner.
+	var expectedWinner types.Hash
+	if bytes.Compare(hashA[:], hashB[:]) < 0 {
+		expectedWinner = hashA
+	} else {
+		expectedWinner = hashB
+	}
+
+	// Submit both blocks. The first one extends the chain; the second is a side chain
+	// with equal work, so the tie-breaker (lower hash) should decide.
+	_, err = c.ProcessBlock(blockA)
+	if err != nil {
+		t.Fatalf("ProcessBlock(blockA): %v", err)
+	}
+	_, err = c.ProcessBlock(blockB)
+	if err != nil {
+		t.Fatalf("ProcessBlock(blockB): %v", err)
+	}
+
+	finalTip, _ := c.Tip()
+	if finalTip != expectedWinner {
+		t.Fatalf("equal-work tie-breaker failed: tip=%s, expected=%s (lower hash wins)", finalTip, expectedWinner)
+	}
+}
+
+func TestSideChainWorkCalculation(t *testing.T) {
+	c, p := setupTestChain(t)
+
+	// Mine 3 blocks on the main chain.
+	for i := 0; i < 3; i++ {
+		block := mineBlock(t, c, p)
+		_, err := c.ProcessBlock(block)
+		if err != nil {
+			t.Fatalf("ProcessBlock main chain %d: %v", i, err)
+		}
+	}
+
+	// Record main chain tip at height 3.
+	mainTipHash, mainTipHeight := c.Tip()
+	if mainTipHeight != 3 {
+		t.Fatalf("main chain height = %d, want 3", mainTipHeight)
+	}
+
+	// Create a side chain forking from height 1 (genesis -> block1 -> sideA -> sideB -> sideC -> sideD).
+	// This side chain needs 4 blocks to have more cumulative work than the main chain's 3 blocks
+	// (since all blocks have the same difficulty, 4 > 3).
+	block1Header, err := c.GetHeaderByHeight(1)
+	if err != nil {
+		t.Fatalf("get header at height 1: %v", err)
+	}
+	block1Hash := c.hashByHeight[1]
+
+	sideA := mineBlockOnParent(t, block1Hash, block1Header, 1, p, "side-A")
+	sideAHash := crypto.HashBlockHeader(&sideA.Header)
+
+	sideB := mineBlockOnParent(t, sideAHash, &sideA.Header, 2, p, "side-B")
+	sideBHash := crypto.HashBlockHeader(&sideB.Header)
+
+	sideC := mineBlockOnParent(t, sideBHash, &sideB.Header, 3, p, "side-C")
+	sideCHash := crypto.HashBlockHeader(&sideC.Header)
+
+	sideD := mineBlockOnParent(t, sideCHash, &sideC.Header, 4, p, "side-D")
+
+	// Submit side chain blocks. sideA and sideB are side-chain blocks (less work).
+	// sideC ties the main chain. sideD should trigger a reorg.
+	_, err = c.ProcessBlock(sideA)
+	if err != nil {
+		t.Fatalf("ProcessBlock(sideA): %v", err)
+	}
+	_, err = c.ProcessBlock(sideB)
+	if err != nil {
+		t.Fatalf("ProcessBlock(sideB): %v", err)
+	}
+	_, err = c.ProcessBlock(sideC)
+	if err != nil {
+		t.Fatalf("ProcessBlock(sideC): %v", err)
+	}
+	_, err = c.ProcessBlock(sideD)
+	if err != nil {
+		t.Fatalf("ProcessBlock(sideD): %v", err)
+	}
+
+	// After sideD, the side chain has 5 blocks of work (genesis + block1 + sideA + sideB + sideC + sideD = 5 post-genesis)
+	// vs main chain's 3 blocks of work. Side chain should win.
+	newTipHash, newTipHeight := c.Tip()
+	if newTipHeight != 5 {
+		t.Fatalf("after side chain reorg, tip height = %d, want 5", newTipHeight)
+	}
+
+	sideDHash := crypto.HashBlockHeader(&sideD.Header)
+	if newTipHash != sideDHash {
+		t.Fatalf("after reorg, tip should be sideD=%s, got %s", sideDHash, newTipHash)
+	}
+
+	// Verify the old main chain tip is no longer the tip.
+	if newTipHash == mainTipHash {
+		t.Fatal("reorg did not happen — still on old main chain")
 	}
 }

@@ -1,7 +1,7 @@
 package store
 
 import (
-	"github.com/fairchain/fairchain/internal/types"
+	"github.com/bams-repo/fairchain/internal/types"
 )
 
 // BlockStore abstracts persistent storage for blocks, headers, and chain state.

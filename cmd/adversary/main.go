@@ -12,12 +12,12 @@ import (
 	"os"
 	"time"
 
-	"github.com/fairchain/fairchain/internal/crypto"
-	"github.com/fairchain/fairchain/internal/types"
+	"github.com/bams-repo/fairchain/internal/crypto"
+	"github.com/bams-repo/fairchain/internal/types"
 )
 
 func main() {
-	attack := flag.String("attack", "", "Attack type: bad-nonce, bad-merkle, duplicate, time-warp-future, time-warp-past, orphan-flood, inflated-coinbase, empty-block")
+	attack := flag.String("attack", "", "Attack type: bad-nonce, bad-merkle, duplicate, time-warp-future, time-warp-past, orphan-flood, inflated-coinbase, empty-block, wrong-bits")
 	rpc := flag.String("rpc", "http://127.0.0.1:31000", "Target node RPC address")
 	count := flag.Int("count", 1, "Number of attack payloads to send (for flood attacks)")
 	flag.Parse()
@@ -48,6 +48,8 @@ func main() {
 		results, err = attackInflatedCoinbase(*rpc)
 	case "empty-block":
 		results, err = attackEmptyBlock(*rpc)
+	case "wrong-bits":
+		results, err = attackWrongBits(*rpc)
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown attack: %s\n", *attack)
 		os.Exit(1)
@@ -377,6 +379,52 @@ func attackEmptyBlock(rpc string) ([]attackResult, error) {
 		Attack:   "empty-block",
 		Rejected: rejected,
 		Detail:   detail,
+	}}, nil
+}
+
+// Attack 8: Block with artificially easy difficulty bits (should be rejected by bits validation)
+func attackWrongBits(rpc string) ([]attackResult, error) {
+	ci, err := fetchChainInfo(rpc)
+	if err != nil {
+		return nil, err
+	}
+
+	prevHash, err := types.HashFromReverseHex(ci.BestHash)
+	if err != nil {
+		return nil, err
+	}
+
+	easyBits := uint32(0x207fffff)
+	newHeight := uint32(ci.Height) + 1
+	cb := makeCoinbaseTx(newHeight, 5000000000)
+
+	block := &types.Block{
+		Header: types.BlockHeader{
+			Version:   1,
+			PrevBlock: prevHash,
+			Timestamp: uint32(time.Now().Unix()),
+			Bits:      easyBits,
+			Nonce:     0,
+		},
+		Transactions: []types.Transaction{cb},
+	}
+
+	merkle, _ := crypto.ComputeMerkleRoot(block.Transactions)
+	block.Header.MerkleRoot = merkle
+
+	target := crypto.CompactToHash(easyBits)
+	found, _ := (&powSealer{}).seal(&block.Header, target, 10000000)
+	detail := ""
+	if !found {
+		detail = "could not find PoW with easy bits; submitting anyway"
+	}
+
+	rejected, submitDetail := submitBlock(rpc, block)
+	return []attackResult{{
+		Attack:   "wrong-bits",
+		Rejected: rejected,
+		Detail:   detail + " | " + submitDetail,
+		Error:    fmt.Sprintf("used bits=0x%08x at height %d", easyBits, newHeight),
 	}}, nil
 }
 

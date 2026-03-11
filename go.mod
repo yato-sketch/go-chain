@@ -1,4 +1,4 @@
-module github.com/fairchain/fairchain
+module github.com/bams-repo/fairchain
 
 go 1.25.7
 

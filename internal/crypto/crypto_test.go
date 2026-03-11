@@ -3,7 +3,7 @@ package crypto
 import (
 	"testing"
 
-	"github.com/fairchain/fairchain/internal/types"
+	"github.com/bams-repo/fairchain/internal/types"
 )
 
 func TestDoubleSHA256Deterministic(t *testing.T) {
