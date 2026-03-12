@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"net"
 	"sync"
@@ -549,7 +550,11 @@ func (m *Manager) handleInv(peer *Peer, inv *protocol.InvMsg) {
 		switch iv.Type {
 		case protocol.InvTypeBlock:
 			blockCount++
-			if !m.chain.HasBlock(iv.Hash) {
+			// Only skip blocks that are on the active chain (in heightByHash).
+			// Blocks that are only in the orphan pool or only in the disk index
+			// (e.g. stored as side-chain blocks after a race) must be re-requested
+			// so the node can process them once the parent becomes available.
+			if !m.chain.HasBlockOnChain(iv.Hash) {
 				needed = append(needed, iv)
 			}
 		case protocol.InvTypeTx:
@@ -565,7 +570,6 @@ func (m *Manager) handleInv(peer *Peer, inv *protocol.InvMsg) {
 		getData.Encode(&buf)
 		peer.SendMessage(protocol.CmdGetData, buf.Bytes())
 	}
-
 }
 
 func (m *Manager) handleGetData(peer *Peer, getData *protocol.GetDataMsg) {
@@ -606,9 +610,29 @@ func (m *Manager) handleBlock(peer *Peer, block *types.Block) {
 
 	height, err := m.chain.ProcessBlock(block)
 	if err != nil {
-		logging.L.Warn("block rejected", "component", "p2p", "hash", blockHash.ReverseString(), "addr", peer.Addr(), "error", err)
-		return
+		if errors.Is(err, chain.ErrSideChain) {
+			logging.L.Debug("block stored as side chain", "component", "p2p", "hash", blockHash.ReverseString(), "height", height)
+		} else {
+			// Block was rejected (orphan, invalid, etc). Remove it from the
+			// seenBlocks cache so it can be re-delivered by another peer.
+			// Without this, a block that arrives as an orphan due to a race
+			// (e.g. after a 1-deep reorg) is permanently poisoned.
+			m.seenBlocks.Delete(blockHash)
+			logging.L.Warn("block rejected", "component", "p2p", "hash", blockHash.ReverseString(), "addr", peer.Addr(), "error", err)
+			return
+		}
 	}
+
+	// Update mempool: remove confirmed transactions and update tip height.
+	var confirmedHashes []types.Hash
+	for _, tx := range block.Transactions {
+		txHash, hashErr := crypto.HashTransaction(&tx)
+		if hashErr == nil {
+			confirmedHashes = append(confirmedHashes, txHash)
+		}
+	}
+	m.mempool.RemoveTxs(confirmedHashes)
+	m.mempool.SetTipHeight(height)
 
 	// Update best peer height tracking for IBD detection.
 	m.mu.Lock()

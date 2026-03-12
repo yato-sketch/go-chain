@@ -2,6 +2,7 @@ package chain
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"math/big"
 	"sort"
@@ -15,32 +16,34 @@ import (
 	"github.com/bams-repo/fairchain/internal/params"
 	"github.com/bams-repo/fairchain/internal/store"
 	"github.com/bams-repo/fairchain/internal/types"
+	"github.com/bams-repo/fairchain/internal/utxo"
 )
 
-// MaxOrphanBlocks limits the orphan block holding area.
 const MaxOrphanBlocks = 100
 
-// Chain manages the blockchain state: tip tracking, block acceptance, and reorgs.
+// ErrSideChain is returned when a block is stored but not on the active chain.
+// Callers can use errors.Is to distinguish this from validation failures.
+var ErrSideChain = errors.New("side chain block")
+
 type Chain struct {
 	mu sync.RWMutex
 
-	params  *params.ChainParams
-	engine  consensus.Engine
-	store   store.BlockStore
+	params *params.ChainParams
+	engine consensus.Engine
+	store  store.BlockStore
 
 	tipHash   types.Hash
 	tipHeight uint32
 	tipWork   *big.Int
 
-	// In-memory index: hash -> height for the main chain.
 	heightByHash map[types.Hash]uint32
 	hashByHeight map[uint32]types.Hash
 
-	// Orphan blocks waiting for their parent.
 	orphans map[types.Hash]*types.Block
+
+	utxoSet *utxo.Set
 }
 
-// New creates a new Chain instance. The caller must call Init() to load or create the genesis.
 func New(p *params.ChainParams, engine consensus.Engine, s store.BlockStore) *Chain {
 	return &Chain{
 		params:       p,
@@ -50,10 +53,17 @@ func New(p *params.ChainParams, engine consensus.Engine, s store.BlockStore) *Ch
 		heightByHash: make(map[types.Hash]uint32),
 		hashByHeight: make(map[uint32]types.Hash),
 		orphans:      make(map[types.Hash]*types.Block),
+		utxoSet:      utxo.NewSet(),
 	}
 }
 
+func (c *Chain) UtxoSet() *utxo.Set {
+	return c.utxoSet
+}
+
 // Init loads the chain state from storage, or initializes with the genesis block.
+// With the new persistent chainstate, UTXO set is loaded from LevelDB rather than
+// replayed from blocks.
 func (c *Chain) Init() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -66,27 +76,94 @@ func (c *Chain) Init() error {
 	c.tipHash = tipHash
 	c.tipHeight = tipHeight
 
-	// Rebuild in-memory index by walking from genesis to tip.
-	for h := uint32(0); h <= tipHeight; h++ {
-		hash, err := c.store.GetBlockByHeight(h)
-		if err != nil {
-			return fmt.Errorf("rebuild index at height %d: %w", h, err)
-		}
-		c.heightByHash[hash] = h
-		c.hashByHeight[h] = hash
-	}
-
-	// Compute cumulative work.
+	// Rebuild in-memory index from the block index.
 	c.tipWork = big.NewInt(0)
-	for h := uint32(0); h <= tipHeight; h++ {
-		header, err := c.store.GetHeader(c.hashByHeight[h])
-		if err != nil {
-			return fmt.Errorf("load header at height %d: %w", h, err)
+	if err := c.store.ForEachBlockIndex(func(hash types.Hash, rec *store.DiskBlockIndex) error {
+		if rec.Status&store.StatusHaveData != 0 {
+			c.heightByHash[hash] = rec.Height
 		}
-		c.tipWork.Add(c.tipWork, crypto.CalcWork(header.Bits))
+		return nil
+	}); err != nil {
+		return fmt.Errorf("rebuild index from block index: %w", err)
 	}
 
+	// Build hashByHeight for the main chain by walking backwards from tip.
+	current := tipHash
+	for h := tipHeight; ; {
+		c.hashByHeight[h] = current
+		rec, err := c.store.GetBlockIndex(current)
+		if err != nil {
+			return fmt.Errorf("walk chain at height %d: %w", h, err)
+		}
+		c.tipWork.Add(c.tipWork, store.CalcWork(rec.Header.Bits))
+		if h == 0 {
+			break
+		}
+		current = rec.Header.PrevBlock
+		h--
+	}
+
+	// Load UTXO set from persistent chainstate.
+	bestBlock, err := c.store.GetBestBlock()
+	if err != nil {
+		// Chainstate empty — need to rebuild from blocks.
+		logging.L.Info("chainstate empty, rebuilding UTXO set from blocks", "component", "chain")
+		return c.rebuildUtxoSet()
+	}
+
+	if bestBlock != tipHash {
+		logging.L.Warn("chainstate tip mismatch, rebuilding UTXO set", "component", "chain",
+			"chainstate_tip", bestBlock.ReverseString(), "chain_tip", tipHash.ReverseString())
+		return c.rebuildUtxoSet()
+	}
+
+	// Chainstate is consistent — load UTXO count for logging.
+	count, _ := c.store.UtxoCount()
+	logging.L.Info("chain loaded from persistent storage", "component", "chain",
+		"height", tipHeight, "utxos", count)
 	return nil
+}
+
+// rebuildUtxoSet replays all blocks to reconstruct the UTXO set and persist it.
+func (c *Chain) rebuildUtxoSet() error {
+	for h := uint32(0); h <= c.tipHeight; h++ {
+		hash, ok := c.hashByHeight[h]
+		if !ok {
+			return fmt.Errorf("missing hash at height %d during UTXO rebuild", h)
+		}
+		block, err := c.store.GetBlock(hash)
+		if err != nil {
+			return fmt.Errorf("load block at height %d for UTXO rebuild: %w", h, err)
+		}
+		if h == 0 {
+			if err := c.utxoSet.ConnectGenesis(block); err != nil {
+				return fmt.Errorf("connect genesis UTXOs: %w", err)
+			}
+		} else {
+			if _, err := c.utxoSet.ConnectBlock(block, h); err != nil {
+				return fmt.Errorf("connect block %d UTXOs: %w", h, err)
+			}
+		}
+	}
+
+	// Persist the rebuilt UTXO set to chainstate.
+	if err := c.flushUtxoSetToChainstate(); err != nil {
+		return fmt.Errorf("flush UTXO set to chainstate: %w", err)
+	}
+
+	logging.L.Info("UTXO set rebuilt and persisted", "component", "chain",
+		"utxos", c.utxoSet.Count(), "height", c.tipHeight)
+	return nil
+}
+
+// flushUtxoSetToChainstate writes the entire in-memory UTXO set to the chainstate DB.
+func (c *Chain) flushUtxoSetToChainstate() error {
+	wb := c.store.NewUtxoWriteBatch()
+	c.utxoSet.ForEach(func(txHash types.Hash, index uint32, entry *utxo.UtxoEntry) {
+		wb.PutUtxo(txHash, index, entry.Serialize())
+	})
+	wb.PutBestBlock(c.tipHash)
+	return c.store.FlushUtxoBatch(wb)
 }
 
 func (c *Chain) initGenesis() error {
@@ -95,10 +172,25 @@ func (c *Chain) initGenesis() error {
 		return fmt.Errorf("genesis hash mismatch: computed=%s expected=%s", genesisHash, c.params.GenesisHash)
 	}
 
-	if err := c.store.PutBlock(genesisHash, &c.params.GenesisBlock); err != nil {
+	// Write genesis block to flat files.
+	fileNum, offset, size, err := c.store.WriteBlock(genesisHash, &c.params.GenesisBlock)
+	if err != nil {
 		return fmt.Errorf("store genesis block: %w", err)
 	}
-	if err := c.store.PutBlockIndex(genesisHash, 0); err != nil {
+
+	// Create block index entry.
+	genesisWork := store.CalcWork(c.params.GenesisBlock.Header.Bits)
+	rec := &store.DiskBlockIndex{
+		Header:    c.params.GenesisBlock.Header,
+		Height:    0,
+		Status:    store.StatusHaveData | store.StatusValidHeader | store.StatusValidTx,
+		TxCount:   uint32(len(c.params.GenesisBlock.Transactions)),
+		FileNum:   fileNum,
+		DataPos:   offset,
+		DataSize:  size,
+		ChainWork: genesisWork,
+	}
+	if err := c.store.PutBlockIndex(genesisHash, rec); err != nil {
 		return fmt.Errorf("store genesis index: %w", err)
 	}
 	if err := c.store.PutChainTip(genesisHash, 0); err != nil {
@@ -107,28 +199,34 @@ func (c *Chain) initGenesis() error {
 
 	c.tipHash = genesisHash
 	c.tipHeight = 0
-	c.tipWork = crypto.CalcWork(c.params.GenesisBlock.Header.Bits)
+	c.tipWork = genesisWork
 	c.heightByHash[genesisHash] = 0
 	c.hashByHeight[0] = genesisHash
+
+	if err := c.utxoSet.ConnectGenesis(&c.params.GenesisBlock); err != nil {
+		return fmt.Errorf("connect genesis UTXOs: %w", err)
+	}
+
+	// Persist genesis UTXO to chainstate.
+	if err := c.flushUtxoSetToChainstate(); err != nil {
+		return fmt.Errorf("flush genesis UTXO: %w", err)
+	}
 
 	return nil
 }
 
-// Tip returns the current best chain tip hash and height.
 func (c *Chain) Tip() (types.Hash, uint32) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.tipHash, c.tipHeight
 }
 
-// TipHeader returns the header of the current best chain tip.
 func (c *Chain) TipHeader() (*types.BlockHeader, error) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.store.GetHeader(c.tipHash)
 }
 
-// GetHeaderByHeight returns the header at the given main-chain height.
 func (c *Chain) GetHeaderByHeight(height uint32) (*types.BlockHeader, error) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -139,7 +237,6 @@ func (c *Chain) GetHeaderByHeight(height uint32) (*types.BlockHeader, error) {
 	return c.store.GetHeader(hash)
 }
 
-// GetBlockByHeight returns the full block at the given main-chain height.
 func (c *Chain) GetBlockByHeight(height uint32) (*types.Block, types.Hash, error) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -154,8 +251,6 @@ func (c *Chain) GetBlockByHeight(height uint32) (*types.Block, types.Hash, error
 	return block, hash, nil
 }
 
-// GetAncestor returns the header at the given height on the main chain.
-// Used as the getAncestor callback for consensus engine methods.
 func (c *Chain) GetAncestor(height uint32) *types.BlockHeader {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -170,7 +265,6 @@ func (c *Chain) GetAncestor(height uint32) *types.BlockHeader {
 	return h
 }
 
-// HasBlock checks if a block is known (stored or orphan).
 func (c *Chain) HasBlock(hash types.Hash) bool {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -184,15 +278,24 @@ func (c *Chain) HasBlock(hash types.Hash) bool {
 	return has
 }
 
-// ProcessBlock validates and potentially accepts a new block.
-// Returns the height at which the block was accepted, or an error.
+// HasBlockOnChain returns true only if the block is tracked in memory as part
+// of a known chain (main or side). Blocks that are only in the orphan pool or
+// only in the disk index are NOT considered "on chain". This is used by the P2P
+// layer to decide whether to request a block from a peer — orphans and rejected
+// blocks must remain requestable so the node can converge after reorgs.
+func (c *Chain) HasBlockOnChain(hash types.Hash) bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	_, ok := c.heightByHash[hash]
+	return ok
+}
+
 func (c *Chain) ProcessBlock(block *types.Block) (uint32, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	blockHash := crypto.HashBlockHeader(&block.Header)
 
-	// Already known?
 	if _, ok := c.heightByHash[blockHash]; ok {
 		metrics.Global.BlocksRejected.Add(1)
 		return 0, fmt.Errorf("block %s already in chain", blockHash)
@@ -202,10 +305,8 @@ func (c *Chain) ProcessBlock(block *types.Block) (uint32, error) {
 		return 0, fmt.Errorf("block %s already in orphan pool", blockHash)
 	}
 
-	// Find parent.
 	parentHeight, parentKnown := c.heightByHash[block.Header.PrevBlock]
 	if !parentKnown {
-		// Orphan: parent not yet known.
 		if len(c.orphans) >= MaxOrphanBlocks {
 			return 0, fmt.Errorf("orphan pool full, rejecting %s", blockHash)
 		}
@@ -216,65 +317,139 @@ func (c *Chain) ProcessBlock(block *types.Block) (uint32, error) {
 
 	newHeight := parentHeight + 1
 
-	// Get parent header for validation.
 	parentHeader, err := c.store.GetHeader(block.Header.PrevBlock)
 	if err != nil {
 		return 0, fmt.Errorf("load parent header: %w", err)
 	}
 
-	// Validate header (consensus engine checks).
+	// Build a side-chain-aware ancestor lookup for this block's parent chain.
+	// This is critical: getAncestorUnsafe only returns active main-chain blocks,
+	// which produces wrong difficulty at retarget boundaries for side chains.
+	getAncestor := c.buildAncestorLookup(block.Header.PrevBlock, parentHeight)
+
 	nowUnix := uint32(time.Now().Unix())
-	if err := c.engine.ValidateHeader(&block.Header, parentHeader, newHeight, c.getAncestorUnsafe, c.params); err != nil {
+	if err := c.engine.ValidateHeader(&block.Header, parentHeader, newHeight, getAncestor, c.params); err != nil {
 		return 0, fmt.Errorf("validate header at height %d: %w", newHeight, err)
 	}
 
-	// Validate timestamp.
-	if err := consensus.ValidateHeaderTimestamp(&block.Header, parentHeader, nowUnix, c.getAncestorUnsafe, parentHeight, c.params); err != nil {
+	if err := consensus.ValidateHeaderTimestamp(&block.Header, parentHeader, nowUnix, getAncestor, parentHeight, c.params); err != nil {
 		return 0, fmt.Errorf("validate timestamp: %w", err)
 	}
 
-	// Validate block structure.
 	if err := c.engine.ValidateBlock(block, newHeight, c.params); err != nil {
 		return 0, fmt.Errorf("validate block at height %d: %w", newHeight, err)
 	}
 
-	// Compute new cumulative work by walking the actual parent chain.
 	blockWork := crypto.CalcWork(block.Header.Bits)
 	parentWork := c.workForParentChain(block.Header.PrevBlock)
 	newWork := new(big.Int).Add(parentWork, blockWork)
 
-	// Store the block.
-	if err := c.store.PutBlock(blockHash, block); err != nil {
+	// Write block to flat files.
+	fileNum, offset, size, err := c.store.WriteBlock(blockHash, block)
+	if err != nil {
 		return 0, fmt.Errorf("store block: %w", err)
 	}
 
-	// Determine if this extends the best chain or causes a reorg.
+	// Create block index entry.
+	rec := &store.DiskBlockIndex{
+		Header:    block.Header,
+		Height:    newHeight,
+		Status:    store.StatusHaveData | store.StatusValidHeader,
+		TxCount:   uint32(len(block.Transactions)),
+		FileNum:   fileNum,
+		DataPos:   offset,
+		DataSize:  size,
+		ChainWork: newWork,
+	}
+
 	if block.Header.PrevBlock == c.tipHash {
-		// Simple extension of the best chain.
+		if _, err := consensus.ValidateTransactionInputs(block, c.utxoSet, newHeight, c.params); err != nil {
+			metrics.Global.BlocksRejected.Add(1)
+			return 0, fmt.Errorf("validate tx inputs at height %d: %w", newHeight, err)
+		}
+
+		undoData, err := c.utxoSet.ConnectBlock(block, newHeight)
+		if err != nil {
+			metrics.Global.BlocksRejected.Add(1)
+			return 0, fmt.Errorf("connect block UTXOs: %w", err)
+		}
+
+		undoBytes := utxo.SerializeUndoData(undoData)
+		undoOffset, undoSize, err := c.store.WriteUndo(fileNum, undoBytes)
+		if err != nil {
+			return 0, fmt.Errorf("store undo data: %w", err)
+		}
+		rec.UndoFile = fileNum
+		rec.UndoPos = undoOffset
+		rec.UndoSize = undoSize
+		rec.Status |= store.StatusHaveUndo | store.StatusValidTx
+
+		if err := c.store.PutBlockIndex(blockHash, rec); err != nil {
+			return 0, fmt.Errorf("store block index: %w", err)
+		}
+
 		if err := c.extendChain(blockHash, newHeight, newWork); err != nil {
 			return 0, err
 		}
+
+		// Persist UTXO changes to chainstate.
+		c.persistUtxoChanges(block, undoData, blockHash)
+		metrics.Global.BlocksAccepted.Add(1)
+
 	} else if newWork.Cmp(c.tipWork) > 0 || (newWork.Cmp(c.tipWork) == 0 && bytes.Compare(blockHash[:], c.tipHash[:]) < 0) {
-		// Side chain with more work, or equal work with lower hash (deterministic tie-breaker) — reorg.
+		if err := c.store.PutBlockIndex(blockHash, rec); err != nil {
+			return 0, fmt.Errorf("store block index: %w", err)
+		}
 		if err := c.reorg(blockHash, newHeight, newWork); err != nil {
 			return 0, fmt.Errorf("reorg to %s: %w", blockHash, err)
 		}
+		metrics.Global.BlocksAccepted.Add(1)
 	} else {
-		// Side chain with less (or equal) work — track in memory only.
+		if err := c.store.PutBlockIndex(blockHash, rec); err != nil {
+			return 0, fmt.Errorf("store block index: %w", err)
+		}
 		c.heightByHash[blockHash] = newHeight
+		c.processOrphans(blockHash)
+		return newHeight, fmt.Errorf("%w: block %s at height %d (insufficient work)", ErrSideChain, blockHash, newHeight)
 	}
 
-	// Process any orphans that depended on this block.
 	c.processOrphans(blockHash)
 
-	metrics.Global.BlocksAccepted.Add(1)
 	return newHeight, nil
 }
 
-func (c *Chain) extendChain(hash types.Hash, height uint32, work *big.Int) error {
-	if err := c.store.PutBlockIndex(hash, height); err != nil {
-		return err
+// persistUtxoChanges writes UTXO changes for a connected block to the chainstate DB.
+func (c *Chain) persistUtxoChanges(block *types.Block, undoData *utxo.BlockUndoData, blockHash types.Hash) {
+	wb := c.store.NewUtxoWriteBatch()
+
+	// Add new outputs.
+	for _, tx := range block.Transactions {
+		txHash, err := crypto.HashTransaction(&tx)
+		if err != nil {
+			continue
+		}
+		for i := range tx.Outputs {
+			entry := c.utxoSet.Get(txHash, uint32(i))
+			if entry != nil {
+				wb.PutUtxo(txHash, uint32(i), entry.Serialize())
+			}
+		}
 	}
+
+	// Remove spent outputs.
+	if undoData != nil {
+		for _, spent := range undoData.SpentOutputs {
+			wb.DeleteUtxo(spent.OutPoint.Hash, spent.OutPoint.Index)
+		}
+	}
+
+	wb.PutBestBlock(blockHash)
+	if err := c.store.FlushUtxoBatch(wb); err != nil {
+		logging.L.Error("failed to flush UTXO changes to chainstate", "component", "chain", "error", err)
+	}
+}
+
+func (c *Chain) extendChain(hash types.Hash, height uint32, work *big.Int) error {
 	if err := c.store.PutChainTip(hash, height); err != nil {
 		return err
 	}
@@ -286,9 +461,6 @@ func (c *Chain) extendChain(hash types.Hash, height uint32, work *big.Int) error
 	return nil
 }
 
-// reorg performs a chain reorganization to a new tip with more work.
-// Walks back from the new tip to find the fork point on the current main chain,
-// then re-indexes from the fork point forward along the new chain.
 func (c *Chain) reorg(newTipHash types.Hash, newTipHeight uint32, newWork *big.Int) error {
 	newChain := []types.Hash{newTipHash}
 	current := newTipHash
@@ -300,8 +472,6 @@ func (c *Chain) reorg(newTipHash types.Hash, newTipHeight uint32, newWork *big.I
 		}
 		prevHash := block.Header.PrevBlock
 
-		// Check if parent is on the main chain: it must be in heightByHash
-		// AND the hash at that height must match (not just a stored side-chain block).
 		if parentHeight, ok := c.heightByHash[prevHash]; ok {
 			if c.hashByHeight[parentHeight] == prevHash {
 				break
@@ -321,6 +491,38 @@ func (c *Chain) reorg(newTipHash types.Hash, newTipHeight uint32, newWork *big.I
 	metrics.Global.Reorgs.Add(1)
 	metrics.Global.ReorgDepthTotal.Add(uint64(reorgDepth))
 
+	// Disconnect old main chain blocks (UTXO rollback).
+	for h := c.tipHeight; h > forkParentHeight; h-- {
+		hash, ok := c.hashByHeight[h]
+		if !ok {
+			continue
+		}
+		block, err := c.store.GetBlock(hash)
+		if err != nil {
+			return fmt.Errorf("load block at height %d for disconnect: %w", h, err)
+		}
+
+		// Read undo data from rev*.dat via the block index.
+		rec, err := c.store.GetBlockIndex(hash)
+		if err != nil {
+			return fmt.Errorf("load block index at height %d: %w", h, err)
+		}
+		if rec.Status&store.StatusHaveUndo == 0 {
+			return fmt.Errorf("no undo data for block at height %d", h)
+		}
+		undoBytes, err := c.store.ReadUndo(rec.UndoFile, rec.UndoPos, rec.UndoSize)
+		if err != nil {
+			return fmt.Errorf("read undo data at height %d: %w", h, err)
+		}
+		undoData, err := utxo.DeserializeUndoData(undoBytes)
+		if err != nil {
+			return fmt.Errorf("deserialize undo data at height %d: %w", h, err)
+		}
+		if err := c.utxoSet.DisconnectBlock(block, undoData); err != nil {
+			return fmt.Errorf("disconnect block at height %d: %w", h, err)
+		}
+	}
+
 	// Remove old main chain entries above fork.
 	for h := forkParentHeight + 1; h <= c.tipHeight; h++ {
 		if hash, ok := c.hashByHeight[h]; ok {
@@ -329,38 +531,70 @@ func (c *Chain) reorg(newTipHash types.Hash, newTipHeight uint32, newWork *big.I
 		}
 	}
 
-	// Add new chain entries.
+	// Connect new chain blocks.
 	for i := len(newChain) - 1; i >= 0; i-- {
 		h := forkParentHeight + uint32(len(newChain)-i)
-		c.heightByHash[newChain[i]] = h
-		c.hashByHeight[h] = newChain[i]
-		if err := c.store.PutBlockIndex(newChain[i], h); err != nil {
-			return err
+		blockHash := newChain[i]
+		block, err := c.store.GetBlock(blockHash)
+		if err != nil {
+			return fmt.Errorf("load new chain block %s: %w", blockHash, err)
 		}
+
+		if _, err := consensus.ValidateTransactionInputs(block, c.utxoSet, h, c.params); err != nil {
+			return fmt.Errorf("validate tx inputs during reorg at height %d: %w", h, err)
+		}
+
+		undoData, err := c.utxoSet.ConnectBlock(block, h)
+		if err != nil {
+			return fmt.Errorf("connect block %s UTXOs during reorg: %w", blockHash, err)
+		}
+
+		// Write undo data.
+		rec, err := c.store.GetBlockIndex(blockHash)
+		if err != nil {
+			return fmt.Errorf("get block index for %s: %w", blockHash, err)
+		}
+		undoBytes := utxo.SerializeUndoData(undoData)
+		undoOffset, undoSize, err := c.store.WriteUndo(rec.FileNum, undoBytes)
+		if err != nil {
+			return fmt.Errorf("write undo data during reorg: %w", err)
+		}
+		rec.UndoFile = rec.FileNum
+		rec.UndoPos = undoOffset
+		rec.UndoSize = undoSize
+		rec.Status |= store.StatusHaveUndo | store.StatusValidTx
+		if err := c.store.PutBlockIndex(blockHash, rec); err != nil {
+			return fmt.Errorf("update block index during reorg: %w", err)
+		}
+
+		c.heightByHash[blockHash] = h
+		c.hashByHeight[h] = blockHash
 	}
 
 	c.tipHash = newTipHash
 	c.tipHeight = newTipHeight
 	c.tipWork = newWork
+
+	// Rebuild chainstate after reorg.
+	if err := c.flushUtxoSetToChainstate(); err != nil {
+		logging.L.Error("failed to flush UTXO set after reorg", "component", "chain", "error", err)
+	}
+
 	return c.store.PutChainTip(newTipHash, newTipHeight)
 }
 
-// orphanEntry pairs a block hash with its block for deterministic sorting.
 type orphanEntry struct {
 	hash  types.Hash
 	block *types.Block
 }
 
 func (c *Chain) processOrphans(parentHash types.Hash) {
-	// Iteratively resolve orphans whose parents are now known.
-	// Uses a queue so that newly connected blocks can unblock further orphans.
 	queue := []types.Hash{parentHash}
 
 	for len(queue) > 0 {
 		parent := queue[0]
 		queue = queue[1:]
 
-		// Collect orphans referencing this parent.
 		var toProcess []orphanEntry
 		for hash, orphan := range c.orphans {
 			if orphan.Header.PrevBlock == parent {
@@ -369,8 +603,6 @@ func (c *Chain) processOrphans(parentHash types.Hash) {
 			}
 		}
 
-		// Sort by block hash for deterministic processing order.
-		// All nodes must process competing orphans in the same sequence.
 		sort.Slice(toProcess, func(i, j int) bool {
 			return bytes.Compare(toProcess[i].hash[:], toProcess[j].hash[:]) < 0
 		})
@@ -389,14 +621,15 @@ func (c *Chain) processOrphans(parentHash types.Hash) {
 				continue
 			}
 
-			if err := c.engine.ValidateHeader(&orphan.Header, parentHeader, newHeight, c.getAncestorUnsafe, c.params); err != nil {
+			getAncestor := c.buildAncestorLookup(orphan.Header.PrevBlock, parentHeight)
+
+			if err := c.engine.ValidateHeader(&orphan.Header, parentHeader, newHeight, getAncestor, c.params); err != nil {
 				logging.L.Debug("orphan failed header validation", "component", "chain", "hash", blockHash.ReverseString(), "error", err)
 				continue
 			}
 
-			// Validate timestamp (same check as normal block processing).
 			nowUnix := uint32(time.Now().Unix())
-			if err := consensus.ValidateHeaderTimestamp(&orphan.Header, parentHeader, nowUnix, c.getAncestorUnsafe, parentHeight, c.params); err != nil {
+			if err := consensus.ValidateHeaderTimestamp(&orphan.Header, parentHeader, nowUnix, getAncestor, parentHeight, c.params); err != nil {
 				logging.L.Debug("orphan failed timestamp validation", "component", "chain", "hash", blockHash.ReverseString(), "error", err)
 				continue
 			}
@@ -410,14 +643,48 @@ func (c *Chain) processOrphans(parentHash types.Hash) {
 			parentWork := c.workForParentChain(orphan.Header.PrevBlock)
 			newWork := new(big.Int).Add(parentWork, blockWork)
 
-			_ = c.store.PutBlock(blockHash, orphan)
+			fileNum, offset, size, err := c.store.WriteBlock(blockHash, orphan)
+			if err != nil {
+				continue
+			}
+			rec := &store.DiskBlockIndex{
+				Header:    orphan.Header,
+				Height:    newHeight,
+				Status:    store.StatusHaveData | store.StatusValidHeader,
+				TxCount:   uint32(len(orphan.Transactions)),
+				FileNum:   fileNum,
+				DataPos:   offset,
+				DataSize:  size,
+				ChainWork: newWork,
+			}
 
 			if orphan.Header.PrevBlock == c.tipHash {
+				if _, err := consensus.ValidateTransactionInputs(orphan, c.utxoSet, newHeight, c.params); err != nil {
+					logging.L.Debug("orphan failed tx input validation", "component", "chain", "hash", blockHash.ReverseString(), "error", err)
+					continue
+				}
+				undoData, err := c.utxoSet.ConnectBlock(orphan, newHeight)
+				if err != nil {
+					logging.L.Warn("orphan UTXO connect failed", "component", "chain", "hash", blockHash.ReverseString(), "error", err)
+					continue
+				}
+				undoBytes := utxo.SerializeUndoData(undoData)
+				undoOffset, undoSize, wErr := c.store.WriteUndo(fileNum, undoBytes)
+				if wErr == nil {
+					rec.UndoFile = fileNum
+					rec.UndoPos = undoOffset
+					rec.UndoSize = undoSize
+					rec.Status |= store.StatusHaveUndo | store.StatusValidTx
+				}
+				_ = c.store.PutBlockIndex(blockHash, rec)
+
 				if err := c.extendChain(blockHash, newHeight, newWork); err != nil {
 					logging.L.Warn("orphan extend failed", "component", "chain", "hash", blockHash.ReverseString(), "error", err)
 					continue
 				}
+				c.persistUtxoChanges(orphan, undoData, blockHash)
 			} else if newWork.Cmp(c.tipWork) > 0 || (newWork.Cmp(c.tipWork) == 0 && bytes.Compare(blockHash[:], c.tipHash[:]) < 0) {
+				_ = c.store.PutBlockIndex(blockHash, rec)
 				c.heightByHash[blockHash] = newHeight
 				if err := c.reorg(blockHash, newHeight, newWork); err != nil {
 					delete(c.heightByHash, blockHash)
@@ -426,6 +693,7 @@ func (c *Chain) processOrphans(parentHash types.Hash) {
 				}
 				logging.L.Info("reorg from orphan resolution", "component", "chain", "hash", blockHash.ReverseString(), "height", newHeight)
 			} else {
+				_ = c.store.PutBlockIndex(blockHash, rec)
 				c.heightByHash[blockHash] = newHeight
 			}
 
@@ -434,8 +702,6 @@ func (c *Chain) processOrphans(parentHash types.Hash) {
 	}
 }
 
-// workForParentChain computes cumulative work by walking backwards from blockHash
-// through its actual parent chain, rather than assuming the main chain.
 func (c *Chain) workForParentChain(blockHash types.Hash) *big.Int {
 	work := big.NewInt(0)
 	current := blockHash
@@ -453,7 +719,8 @@ func (c *Chain) workForParentChain(blockHash types.Hash) *big.Int {
 	return work
 }
 
-// getAncestorUnsafe is used internally when the lock is already held.
+// getAncestorUnsafe returns the main chain block header at the given height.
+// Only valid for blocks on the active main chain.
 func (c *Chain) getAncestorUnsafe(height uint32) *types.BlockHeader {
 	hash, ok := c.hashByHeight[height]
 	if !ok {
@@ -466,12 +733,50 @@ func (c *Chain) getAncestorUnsafe(height uint32) *types.BlockHeader {
 	return h
 }
 
-// GetBlock retrieves a block by hash from storage.
+// buildAncestorLookup constructs a height->header map for a block's ancestor
+// chain by walking backwards from parentHash through the store. This produces
+// a correct ancestor function for side-chain blocks where the parent chain
+// may differ from the active main chain (critical for difficulty retargeting).
+func (c *Chain) buildAncestorLookup(parentHash types.Hash, parentHeight uint32) func(uint32) *types.BlockHeader {
+	ancestors := make(map[uint32]*types.BlockHeader)
+
+	current := parentHash
+	h := parentHeight
+	for {
+		// If this height is on the main chain with the same hash, we can use
+		// the main chain for this height and all below — they share history.
+		if mainHash, ok := c.hashByHeight[h]; ok && mainHash == current {
+			break
+		}
+
+		header, err := c.store.GetHeader(current)
+		if err != nil {
+			break
+		}
+		ancestors[h] = header
+
+		if header.PrevBlock.IsZero() {
+			break
+		}
+		current = header.PrevBlock
+		if h == 0 {
+			break
+		}
+		h--
+	}
+
+	return func(height uint32) *types.BlockHeader {
+		if hdr, ok := ancestors[height]; ok {
+			return hdr
+		}
+		return c.getAncestorUnsafe(height)
+	}
+}
+
 func (c *Chain) GetBlock(hash types.Hash) (*types.Block, error) {
 	return c.store.GetBlock(hash)
 }
 
-// ChainInfo holds aggregate statistics for the getblockchaininfo RPC.
 type ChainInfo struct {
 	Network          string
 	Height           uint32
@@ -488,7 +793,6 @@ type ChainInfo struct {
 	VerificationProg float64
 }
 
-// GetChainInfo computes aggregate chain statistics.
 func (c *Chain) GetChainInfo() *ChainInfo {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -514,7 +818,6 @@ func (c *Chain) GetChainInfo() *ChainInfo {
 		}
 	}
 
-	// Median time past (last 11 blocks).
 	const medianCount = 11
 	timestamps := make([]uint32, 0, medianCount)
 	for i := uint32(0); i < medianCount && c.tipHeight >= i; i++ {
@@ -549,6 +852,24 @@ func (c *Chain) GetChainInfo() *ChainInfo {
 	}
 
 	info.VerificationProg = 1.0
-
 	return info
+}
+
+// TxOutSetInfo returns UTXO set statistics atomically with the current tip.
+type TxOutSetInfoResult struct {
+	Height     uint32
+	BestHash   types.Hash
+	TxOuts     int
+	TotalValue uint64
+}
+
+func (c *Chain) TxOutSetInfo() *TxOutSetInfoResult {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return &TxOutSetInfoResult{
+		Height:     c.tipHeight,
+		BestHash:   c.tipHash,
+		TxOuts:     c.utxoSet.Count(),
+		TotalValue: c.utxoSet.TotalValue(),
+	}
 }
