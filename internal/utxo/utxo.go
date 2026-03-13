@@ -288,12 +288,15 @@ func (s *Set) ConnectBlock(block *types.Block, height uint32) (*BlockUndoData, e
 	}
 
 	// All transactions validated — apply mutations atomically.
+	// Outputs spent within the same block must not appear in the final UTXO set.
 	s.mu.Lock()
 	for _, key := range toRemove {
 		delete(s.entries, key)
 	}
 	for _, a := range toAdd {
-		s.entries[a.key] = a.entry
+		if _, spent := spentInBlock[a.key]; !spent {
+			s.entries[a.key] = a.entry
+		}
 	}
 	s.mu.Unlock()
 

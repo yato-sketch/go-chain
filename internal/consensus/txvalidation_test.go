@@ -3,6 +3,7 @@ package consensus
 import (
 	"testing"
 
+	"github.com/bams-repo/fairchain/internal/crypto"
 	"github.com/bams-repo/fairchain/internal/params"
 	"github.com/bams-repo/fairchain/internal/types"
 	"github.com/bams-repo/fairchain/internal/utxo"
@@ -39,6 +40,313 @@ func addUTXO(s *utxo.Set, hash types.Hash, index uint32, value uint64, height ui
 		IsCoinbase: isCoinbase,
 	})
 }
+
+func TestValidateTransactionInputs_ScriptValidation_RejectsStealUTXO(t *testing.T) {
+	p := params.Regtest
+
+	_, pubBytes, err := crypto.GenerateKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pkScript := crypto.MakeP2PKHScriptFromPubKey(pubBytes)
+
+	prevTxHash := crypto.DoubleSHA256([]byte("miner-coinbase-tx"))
+	utxoSet := utxo.NewSet()
+	utxoSet.Add(prevTxHash, 0, &utxo.UtxoEntry{
+		Value:      5_000_000_000,
+		PkScript:   pkScript,
+		Height:     1,
+		IsCoinbase: true,
+	})
+
+	height := uint32(200)
+	subsidy := p.CalcSubsidy(height)
+
+	heightBytes := make([]byte, 4)
+	types.PutUint32LE(heightBytes, height)
+	coinbase := types.Transaction{
+		Version: 1,
+		Inputs: []types.TxInput{{
+			PreviousOutPoint: types.CoinbaseOutPoint,
+			SignatureScript:  append(heightBytes, []byte("test")...),
+			Sequence:         0xFFFFFFFF,
+		}},
+		Outputs: []types.TxOutput{{Value: subsidy + 100, PkScript: []byte{0x00}}},
+	}
+
+	// Attacker tries to spend the UTXO with arbitrary bytes (no valid signature).
+	stealTx := types.Transaction{
+		Version: 1,
+		Inputs: []types.TxInput{{
+			PreviousOutPoint: types.OutPoint{Hash: prevTxHash, Index: 0},
+			SignatureScript:  []byte("STOLEN-no-signature-required"),
+			Sequence:         0xFFFFFFFF,
+		}},
+		Outputs: []types.TxOutput{{Value: 4_999_999_900, PkScript: []byte("attacker")}},
+	}
+
+	block := &types.Block{
+		Transactions: []types.Transaction{coinbase, stealTx},
+	}
+
+	_, err = ValidateTransactionInputs(block, utxoSet, height, p)
+	if err == nil {
+		t.Fatal("steal-utxo attack should be rejected by script validation in ValidateTransactionInputs")
+	}
+	t.Logf("steal-utxo correctly rejected at consensus level: %v", err)
+}
+
+func TestValidateTransactionInputs_ScriptValidation_AcceptsValidSig(t *testing.T) {
+	p := params.Regtest
+
+	privBytes, pubBytes, err := crypto.GenerateKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	privKey, err := crypto.PrivKeyFromBytes(privBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pkScript := crypto.MakeP2PKHScriptFromPubKey(pubBytes)
+
+	prevTxHash := crypto.DoubleSHA256([]byte("miner-coinbase-tx"))
+	utxoSet := utxo.NewSet()
+	utxoSet.Add(prevTxHash, 0, &utxo.UtxoEntry{
+		Value:      5_000_000_000,
+		PkScript:   pkScript,
+		Height:     1,
+		IsCoinbase: true,
+	})
+
+	height := uint32(200)
+	subsidy := p.CalcSubsidy(height)
+	fee := uint64(100)
+
+	heightBytes := make([]byte, 4)
+	types.PutUint32LE(heightBytes, height)
+	coinbase := types.Transaction{
+		Version: 1,
+		Inputs: []types.TxInput{{
+			PreviousOutPoint: types.CoinbaseOutPoint,
+			SignatureScript:  append(heightBytes, []byte("test")...),
+			Sequence:         0xFFFFFFFF,
+		}},
+		Outputs: []types.TxOutput{{Value: subsidy + fee, PkScript: []byte{0x00}}},
+	}
+
+	spendTx := types.Transaction{
+		Version: 1,
+		Inputs: []types.TxInput{{
+			PreviousOutPoint: types.OutPoint{Hash: prevTxHash, Index: 0},
+			Sequence:         0xFFFFFFFF,
+		}},
+		Outputs: []types.TxOutput{{Value: 5_000_000_000 - fee, PkScript: pkScript}},
+	}
+
+	sigScript, err := crypto.SignInput(&spendTx, 0, pkScript, privKey)
+	if err != nil {
+		t.Fatalf("sign input: %v", err)
+	}
+	spendTx.Inputs[0].SignatureScript = sigScript
+
+	block := &types.Block{
+		Transactions: []types.Transaction{coinbase, spendTx},
+	}
+
+	fees, err := ValidateTransactionInputs(block, utxoSet, height, p)
+	if err != nil {
+		t.Fatalf("valid signed transaction should pass: %v", err)
+	}
+	if fees != fee {
+		t.Fatalf("fees: got %d, want %d", fees, fee)
+	}
+}
+
+func TestValidateTransactionInputs_ScriptValidation_RejectsBurnSpend(t *testing.T) {
+	p := params.Testnet
+
+	burnScript := []byte("burn:testnet:premine:v1")
+	prevTxHash := crypto.DoubleSHA256([]byte("genesis-coinbase"))
+
+	utxoSet := utxo.NewSet()
+	utxoSet.Add(prevTxHash, 1, &utxo.UtxoEntry{
+		Value:      419_999_999_538_000,
+		PkScript:   burnScript,
+		Height:     0,
+		IsCoinbase: true,
+	})
+
+	height := uint32(100)
+	subsidy := p.CalcSubsidy(height)
+
+	heightBytes := make([]byte, 4)
+	types.PutUint32LE(heightBytes, height)
+	coinbase := types.Transaction{
+		Version: 1,
+		Inputs: []types.TxInput{{
+			PreviousOutPoint: types.CoinbaseOutPoint,
+			SignatureScript:  append(heightBytes, []byte("test")...),
+			Sequence:         0xFFFFFFFF,
+		}},
+		Outputs: []types.TxOutput{{Value: subsidy + 1000, PkScript: []byte{0x00}}},
+	}
+
+	stealTx := types.Transaction{
+		Version: 1,
+		Inputs: []types.TxInput{{
+			PreviousOutPoint: types.OutPoint{Hash: prevTxHash, Index: 1},
+			SignatureScript:  []byte("PREMINE-THEFT-no-script-validation"),
+			Sequence:         0xFFFFFFFF,
+		}},
+		Outputs: []types.TxOutput{
+			{Value: 209_999_999_769_000, PkScript: []byte("attacker-1")},
+			{Value: 209_999_999_768_000, PkScript: []byte("attacker-2")},
+		},
+	}
+
+	block := &types.Block{
+		Transactions: []types.Transaction{coinbase, stealTx},
+	}
+
+	_, err := ValidateTransactionInputs(block, utxoSet, height, p)
+	if err == nil {
+		t.Fatal("steal-premine attack should be rejected by script validation")
+	}
+	t.Logf("steal-premine correctly rejected at consensus level: %v", err)
+}
+
+func TestValidateTransactionInputs_LegacyScriptSkipped(t *testing.T) {
+	p := params.Regtest
+
+	legacyScript := []byte{0x00}
+	prevTxHash := crypto.DoubleSHA256([]byte("genesis-coinbase"))
+
+	utxoSet := utxo.NewSet()
+	utxoSet.Add(prevTxHash, 0, &utxo.UtxoEntry{
+		Value:      5_000_000_000,
+		PkScript:   legacyScript,
+		Height:     0,
+		IsCoinbase: true,
+	})
+
+	height := uint32(10)
+	subsidy := p.CalcSubsidy(height)
+
+	heightBytes := make([]byte, 4)
+	types.PutUint32LE(heightBytes, height)
+	coinbase := types.Transaction{
+		Version: 1,
+		Inputs: []types.TxInput{{
+			PreviousOutPoint: types.CoinbaseOutPoint,
+			SignatureScript:  append(heightBytes, []byte("test")...),
+			Sequence:         0xFFFFFFFF,
+		}},
+		Outputs: []types.TxOutput{{Value: subsidy + 100, PkScript: []byte{0x00}}},
+	}
+
+	spendTx := types.Transaction{
+		Version: 1,
+		Inputs: []types.TxInput{{
+			PreviousOutPoint: types.OutPoint{Hash: prevTxHash, Index: 0},
+			SignatureScript:  []byte("anything-goes-for-legacy"),
+			Sequence:         0xFFFFFFFF,
+		}},
+		Outputs: []types.TxOutput{{Value: 4_999_999_900, PkScript: []byte{0x00}}},
+	}
+
+	block := &types.Block{
+		Transactions: []types.Transaction{coinbase, spendTx},
+	}
+
+	fees, err := ValidateTransactionInputs(block, utxoSet, height, p)
+	if err != nil {
+		t.Fatalf("legacy script should be skipped during validation: %v", err)
+	}
+	if fees != 100 {
+		t.Fatalf("fees: got %d, want 100", fees)
+	}
+}
+
+func TestValidateSingleTransaction_ScriptValidation_RejectsSteal(t *testing.T) {
+	p := params.Regtest
+
+	_, pubBytes, err := crypto.GenerateKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pkScript := crypto.MakeP2PKHScriptFromPubKey(pubBytes)
+
+	prevTxHash := crypto.DoubleSHA256([]byte("some-tx"))
+	utxoSet := utxo.NewSet()
+	utxoSet.Add(prevTxHash, 0, &utxo.UtxoEntry{
+		Value:    1_000_000,
+		PkScript: pkScript,
+		Height:   1,
+	})
+
+	stealTx := &types.Transaction{
+		Version: 1,
+		Inputs: []types.TxInput{{
+			PreviousOutPoint: types.OutPoint{Hash: prevTxHash, Index: 0},
+			SignatureScript:  []byte("STOLEN"),
+			Sequence:         0xFFFFFFFF,
+		}},
+		Outputs: []types.TxOutput{{Value: 999_000, PkScript: []byte("attacker")}},
+	}
+
+	_, err = ValidateSingleTransaction(stealTx, utxoSet, 100, p)
+	if err == nil {
+		t.Fatal("mempool should reject transaction with invalid script")
+	}
+	t.Logf("mempool steal correctly rejected: %v", err)
+}
+
+func TestValidateSingleTransaction_ScriptValidation_AcceptsValid(t *testing.T) {
+	p := params.Regtest
+
+	privBytes, pubBytes, err := crypto.GenerateKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	privKey, err := crypto.PrivKeyFromBytes(privBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pkScript := crypto.MakeP2PKHScriptFromPubKey(pubBytes)
+
+	prevTxHash := crypto.DoubleSHA256([]byte("some-tx"))
+	utxoSet := utxo.NewSet()
+	utxoSet.Add(prevTxHash, 0, &utxo.UtxoEntry{
+		Value:    1_000_000,
+		PkScript: pkScript,
+		Height:   1,
+	})
+
+	spendTx := &types.Transaction{
+		Version: 1,
+		Inputs: []types.TxInput{{
+			PreviousOutPoint: types.OutPoint{Hash: prevTxHash, Index: 0},
+			Sequence:         0xFFFFFFFF,
+		}},
+		Outputs: []types.TxOutput{{Value: 999_000, PkScript: pkScript}},
+	}
+
+	sigScript, err := crypto.SignInput(spendTx, 0, pkScript, privKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spendTx.Inputs[0].SignatureScript = sigScript
+
+	fee, err := ValidateSingleTransaction(spendTx, utxoSet, 100, p)
+	if err != nil {
+		t.Fatalf("valid signed transaction should pass mempool validation: %v", err)
+	}
+	if fee != 1000 {
+		t.Fatalf("fee: got %d, want 1000", fee)
+	}
+}
+
+// --- Legacy validation tests (UTXO/value/structure rules, using legacy scripts) ---
 
 func TestDoubleSpendWithinBlock(t *testing.T) {
 	p := makeTestParams()

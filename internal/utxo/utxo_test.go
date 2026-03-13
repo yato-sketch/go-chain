@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"testing"
 
+	"github.com/bams-repo/fairchain/internal/crypto"
 	"github.com/bams-repo/fairchain/internal/types"
 )
 
@@ -265,6 +266,112 @@ func TestConnectBlockAtomicOnFailure(t *testing.T) {
 	if !s.Has(txHash1, 0) {
 		t.Fatal("txHash1:0 should still exist after failed ConnectBlock")
 	}
+}
+
+func TestConnectBlockIntraBlockSpendNotLeaked(t *testing.T) {
+	s := NewSet()
+
+	var fundHash types.Hash
+	fundHash[0] = 0x01
+	s.Add(fundHash, 0, &UtxoEntry{Value: 1000, PkScript: []byte{0x00}, Height: 0})
+
+	// Tx1 (coinbase) creates output. Tx2 spends fundHash:0 and creates an
+	// output. Tx3 spends Tx2's output within the same block. After
+	// ConnectBlock, Tx2's output must NOT appear in the UTXO set because it
+	// was consumed by Tx3.
+	block := &types.Block{
+		Transactions: []types.Transaction{
+			{
+				Version: 1,
+				Inputs: []types.TxInput{
+					{PreviousOutPoint: types.CoinbaseOutPoint, SignatureScript: []byte("cb"), Sequence: 0xFFFFFFFF},
+				},
+				Outputs: []types.TxOutput{
+					{Value: 5000000000, PkScript: []byte{0x00}},
+				},
+			},
+			{
+				Version: 1,
+				Inputs: []types.TxInput{
+					{PreviousOutPoint: types.OutPoint{Hash: fundHash, Index: 0}, Sequence: 0xFFFFFFFF},
+				},
+				Outputs: []types.TxOutput{
+					{Value: 900, PkScript: []byte{0x00}},
+				},
+			},
+		},
+	}
+
+	undo, err := s.ConnectBlock(block, 1)
+	if err != nil {
+		t.Fatalf("ConnectBlock: %v", err)
+	}
+
+	// Get tx2's hash so we can build a block that spends it in-block.
+	tx2Hash := hashTx(&block.Transactions[1])
+
+	// Now build a second block where tx1 creates output, tx2 spends the
+	// previous block's tx2 output, and tx3 spends tx2's output in-block.
+	block2 := &types.Block{
+		Transactions: []types.Transaction{
+			{
+				Version: 1,
+				Inputs: []types.TxInput{
+					{PreviousOutPoint: types.CoinbaseOutPoint, SignatureScript: []byte("cb2"), Sequence: 0xFFFFFFFF},
+				},
+				Outputs: []types.TxOutput{
+					{Value: 5000000000, PkScript: []byte{0x00}},
+				},
+			},
+			{
+				Version: 1,
+				Inputs: []types.TxInput{
+					{PreviousOutPoint: types.OutPoint{Hash: tx2Hash, Index: 0}, Sequence: 0xFFFFFFFF},
+				},
+				Outputs: []types.TxOutput{
+					{Value: 800, PkScript: []byte{0x00}},
+				},
+			},
+		},
+	}
+
+	// Get the hash of block2's tx[1] so we can spend it in the same block.
+	b2Tx1Hash := hashTx(&block2.Transactions[1])
+
+	// Add tx3 that spends tx2's output within the same block.
+	block2.Transactions = append(block2.Transactions, types.Transaction{
+		Version: 1,
+		Inputs: []types.TxInput{
+			{PreviousOutPoint: types.OutPoint{Hash: b2Tx1Hash, Index: 0}, Sequence: 0xFFFFFFFF},
+		},
+		Outputs: []types.TxOutput{
+			{Value: 700, PkScript: []byte{0x00}},
+		},
+	})
+
+	_, err = s.ConnectBlock(block2, 2)
+	if err != nil {
+		t.Fatalf("ConnectBlock block2: %v", err)
+	}
+
+	// The intermediate output (b2Tx1Hash:0) was spent in-block and must NOT
+	// be in the UTXO set.
+	if s.Has(b2Tx1Hash, 0) {
+		t.Fatal("in-block spent output should not appear in UTXO set")
+	}
+
+	// The final output (tx3's output) should be in the set.
+	b2Tx2Hash := hashTx(&block2.Transactions[2])
+	if !s.Has(b2Tx2Hash, 0) {
+		t.Fatal("final output of in-block chain should be in UTXO set")
+	}
+
+	_ = undo
+}
+
+func hashTx(tx *types.Transaction) types.Hash {
+	h, _ := crypto.HashTransaction(tx)
+	return h
 }
 
 func TestConnectBlockIntraBlockDoubleSpend(t *testing.T) {

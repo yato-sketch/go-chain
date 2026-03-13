@@ -18,6 +18,7 @@ internal/      → All library code (not importable externally)
   params/      → Chain parameters, genesis config, network definitions
   consensus/   → Engine interface, structural validation, timestamp rules, tx validation
   consensus/pow/ → Baseline PoW engine
+  script/      → Bitcoin-compatible script interpreter (P2PKH)
   chain/       → Blockchain state manager (UTXO-aware)
   store/       → Abstract storage + bbolt implementation (blocks, UTXOs, undo data, peers)
   utxo/        → UTXO set, entries, connect/disconnect blocks, undo data serialization
@@ -27,6 +28,7 @@ internal/      → All library code (not importable externally)
   p2p/discovery/ → Peer discovery
   protocol/    → Wire message definitions, binary encoding
   rpc/         → Local HTTP JSON API (Bitcoin Core-compatible endpoints)
+  wallet/      → Mining keypair management (secp256k1, P2PKH)
   config/      → Config loading
   logging/     → Structured logging (log/slog wrapper)
   metrics/     → Atomic counters for node activity
@@ -203,11 +205,15 @@ Genesis config structure:
 - bbolt persistent storage (blocks, headers, chain state, UTXOs, undo data, peers)
 - **UTXO set** (in-memory with bbolt persistence, connect/disconnect per block)
 - **Transaction input validation**: UTXO existence, value checks, coinbase maturity
+- **Script validation**: secp256k1 ECDSA P2PKH (Pay-to-Public-Key-Hash) with Bitcoin-compatible sighash
+- **Script engine**: Minimal Bitcoin-compatible interpreter (OP_DUP, OP_HASH160, OP_EQUALVERIFY, OP_CHECKSIG, OP_RETURN)
+- **Key management**: secp256k1 keypair generation, persistence, Hash160 address derivation
+- **Wallet**: Auto-generated mining keypair with P2PKH output scripts
 - **Fee calculation**: input sum - output sum, coinbase capped at subsidy + fees
 - **UTXO-aware reorg**: disconnect old chain blocks (restore spent UTXOs), reconnect new chain
 - **Block undo data**: serialized per-block for rollback support
-- Thread-safe mempool with **UTXO validation, double-spend detection, fee-rate priority, eviction**
-- Mining loop with template building, **fee-inclusive coinbase**
+- Thread-safe mempool with **UTXO validation, script validation, double-spend detection, fee-rate priority, eviction**
+- Mining loop with template building, **fee-inclusive coinbase, P2PKH reward scripts**
 - P2P peer management with handshake
 - Inventory-based gossip protocol
 - Block and transaction propagation
@@ -225,29 +231,25 @@ Genesis config structure:
 
 ## 9. What Is Stubbed but Planned
 
-- **Script validation**: `TxInput.SignatureScript` and `TxOutput.PkScript` fields exist but are not interpreted. UTXO validation checks existence and value but not script execution.
-
 - **Headers-first sync**: Current sync uses `getblocks` to request block hashes, then fetches full blocks. The protocol supports a headers-first approach but it's not implemented.
 
 - **Peer scoring**: The peer struct has infrastructure for tracking behavior but no scoring/banning logic.
 
-- **Activation heights**: `ChainParams.ActivationHeights` map exists but no activation logic uses it yet.
+- **Activation heights**: `ChainParams.ActivationHeights` map exists. Currently used for `script_validation` activation gating.
 
 ## 10. Known Limitations
 
-1. **No script validation**: Transactions are validated for UTXO existence, value, and maturity, but signature/script verification is not implemented. Any transaction with valid UTXO references is accepted.
+1. **UTXO set rebuilt on startup**: The in-memory UTXO set is rebuilt by replaying all blocks from genesis. For very long chains this could be slow. Persistent UTXO snapshots would improve startup time.
 
-2. **UTXO set rebuilt on startup**: The in-memory UTXO set is rebuilt by replaying all blocks from genesis. For very long chains this could be slow. Persistent UTXO snapshots would improve startup time.
+2. **Genesis mined at startup**: Each network's genesis is mined on first run. For regtest this is instant; for mainnet/testnet it could be slow. Pre-computed genesis hashes should be hardcoded for production.
 
-3. **Genesis mined at startup**: Each network's genesis is mined on first run. For regtest this is instant; for mainnet/testnet it could be slow. Pre-computed genesis hashes should be hardcoded for production.
+3. **Single-threaded mining**: The miner uses a single goroutine. No parallel nonce search.
 
-4. **No wallet**: No key generation, address derivation, or transaction signing.
+4. **No checkpoints**: No checkpoint validation for fast sync.
 
-5. **Single-threaded mining**: The miner uses a single goroutine. No parallel nonce search.
+5. **Memory-resident chain index**: The height↔hash index is rebuilt from storage on startup. For very long chains this could be slow.
 
-6. **No checkpoints**: No checkpoint validation for fast sync.
-
-7. **Memory-resident chain index**: The height↔hash index is rebuilt from storage on startup. For very long chains this could be slow.
+6. **Legacy script compatibility**: Genesis-era UTXOs with `PkScript = {0x00}` are treated as anyone-can-spend for backward compatibility. All new outputs use P2PKH.
 
 ## 11. Consensus Audit — Failure Analysis & Fix Tasks
 
@@ -409,8 +411,8 @@ These areas are designed for extension and can be modified without breaking exis
 - **`consensus.Engine` interface**: Add new implementations freely. The chain manager calls through this interface.
 - **`ChainParams.ActivationHeights`**: Use this to gate new consensus rules by block height.
 - **`Transaction.Version`**: Use new version numbers for new transaction types (identity registration, etc.).
-- **`TxOutput.PkScript`**: Currently a raw byte placeholder. Can be extended to support real locking scripts.
-- **`TxInput.SignatureScript`**: Currently unused for validation. Can be extended for signature verification.
+- **`TxOutput.PkScript`**: Supports P2PKH and OP_RETURN. Can be extended for P2SH, P2WPKH, etc.
+- **`TxInput.SignatureScript`**: Validated via script engine for P2PKH. Can be extended for new script types.
 - **`BlockHeader.Version`**: Use for signaling consensus upgrades.
 - **Mempool admission**: Add validation rules in `mempool.AddTx()` without affecting consensus.
 - **RPC endpoints**: Add new endpoints to `rpc/server.go` freely.
@@ -431,7 +433,9 @@ These areas are designed for extension and can be modified without breaking exis
 - **`params/params.go` CalcSubsidy**: Subsidy calculation is consensus-critical.
 
 - **`utxo/utxo.go` ConnectBlock/DisconnectBlock**: UTXO state transitions must be deterministic and reversible.
-- **`consensus/txvalidation.go`**: Transaction input validation and fee calculation are consensus-critical.
+- **`consensus/txvalidation.go`**: Transaction input validation, script validation, and fee calculation are consensus-critical.
+- **`script/script.go`**: Script interpreter is consensus-critical. Opcode behavior must be identical on all nodes.
+- **`crypto/keys.go`**: Hash160, P2PKH script construction, and sighash computation are consensus-critical.
 
 **Rule of thumb**: If a change affects the output of `HashBlockHeader`, `HashTransaction`, `ComputeMerkleRoot`, `CompactToBig`, `CalcSubsidy`, `CalcNextBits`, or UTXO connect/disconnect behavior, it is a consensus-breaking change and requires a hard fork.
 

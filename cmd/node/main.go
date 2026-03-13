@@ -25,6 +25,7 @@ import (
 	"github.com/bams-repo/fairchain/internal/store"
 	"github.com/bams-repo/fairchain/internal/timeadjust"
 	"github.com/bams-repo/fairchain/internal/types"
+	"github.com/bams-repo/fairchain/internal/wallet"
 )
 
 func main() {
@@ -229,10 +230,21 @@ func main() {
 
 	// Start miner if enabled.
 	if cfg.MiningEnabled {
-		rewardScript := []byte(cfg.MiningAddr)
-		if len(rewardScript) == 0 {
-			rewardScript = []byte{0x00}
+		ks, err := wallet.LoadOrCreate(cfg.WalletDir())
+		if err != nil {
+			cancel()
+			p2pMgr.Stop()
+			rpcServer.Stop(context.Background())
+			peerStore.Close()
+			blockStore.Close()
+			log.Error("failed to load mining key", "error", err)
+			os.Exit(1)
 		}
+		rewardScript := ks.P2PKHScript()
+		pkh := ks.PubKeyHash()
+		log.Info("mining key loaded",
+			"pubkey_hash", fmt.Sprintf("%x", pkh[:]),
+			"script_len", len(rewardScript))
 		m := miner.New(bc, engine, mp, params, rewardScript, func(block *types.Block) {
 			height, err := bc.ProcessBlock(block)
 			if err != nil {

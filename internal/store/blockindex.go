@@ -136,9 +136,11 @@ func fileInfoKey(fileNum uint32) []byte {
 	return key
 }
 
-// PutBlockIndex stores a DiskBlockIndex record.
+// PutBlockIndex stores a DiskBlockIndex record with synchronous writes to
+// ensure the index survives crashes. Without Sync, a crash after an
+// acknowledged write can lose the block index entry.
 func (bi *BlockIndex) PutBlockIndex(hash types.Hash, rec *DiskBlockIndex) error {
-	return bi.db.Put(blockIndexKey(hash), rec.Serialize(), nil)
+	return bi.db.Put(blockIndexKey(hash), rec.Serialize(), &opt.WriteOptions{Sync: true})
 }
 
 // GetBlockIndex retrieves a DiskBlockIndex record by block hash.
@@ -159,7 +161,7 @@ func (bi *BlockIndex) HasBlock(hash types.Hash) (bool, error) {
 func (bi *BlockIndex) PutLastFile(fileNum uint32) error {
 	var buf [4]byte
 	binary.LittleEndian.PutUint32(buf[:], fileNum)
-	return bi.db.Put(keyLastFile, buf[:], nil)
+	return bi.db.Put(keyLastFile, buf[:], &opt.WriteOptions{Sync: true})
 }
 
 // GetLastFile retrieves the last block file number.
@@ -195,7 +197,7 @@ func (bi *BlockIndex) PutFileInfo(fileNum uint32, info *BlockFileInfo) error {
 	binary.Write(&buf, binary.LittleEndian, info.HeightHigh)
 	binary.Write(&buf, binary.LittleEndian, info.TimeLow)
 	binary.Write(&buf, binary.LittleEndian, info.TimeHigh)
-	return bi.db.Put(fileInfoKey(fileNum), buf.Bytes(), nil)
+	return bi.db.Put(fileInfoKey(fileNum), buf.Bytes(), &opt.WriteOptions{Sync: true})
 }
 
 // ForEachBlock iterates over all block index entries.

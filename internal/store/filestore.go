@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/bams-repo/fairchain/internal/types"
+	"github.com/syndtr/goleveldb/leveldb/opt"
 )
 
 // Chain tip keys stored in the block index LevelDB.
@@ -100,12 +101,12 @@ func (fs *FileStore) GetChainTip() (types.Hash, uint32, error) {
 	return hash, height, nil
 }
 
-// PutChainTip stores the chain tip hash and height.
+// PutChainTip stores the chain tip hash and height with synchronous writes.
 func (fs *FileStore) PutChainTip(hash types.Hash, height uint32) error {
 	data := make([]byte, types.HashSize+4)
 	copy(data[:types.HashSize], hash[:])
 	binary.BigEndian.PutUint32(data[types.HashSize:], height)
-	return fs.index.db.Put(keyChainTip, data, nil)
+	return fs.index.db.Put(keyChainTip, data, &opt.WriteOptions{Sync: true})
 }
 
 // PutUtxo stores a UTXO entry in chainstate.

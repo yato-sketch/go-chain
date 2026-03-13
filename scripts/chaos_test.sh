@@ -16,14 +16,13 @@ set -uo pipefail
 #   13 — Orphan flood (blocks referencing random nonexistent parents)
 #   14 — Inflated coinbase reward and empty (no-tx) blocks
 #   15 — Post-attack convergence verification
-# Phases A-H: Consensus stress tests:
+# Phases A-F,H: Consensus stress tests:
 #   A — Difficulty manipulation (wrong-bits attack)
 #   B — Retarget boundary stress (verify all nodes agree on difficulty)
 #   C — Equal-work fork resolution
 #   D — Deep reorg resilience (partitioned mining)
 #   E — Orphan storm (blocks ahead of tip)
 #   F — Height index integrity (verify all nodes agree at every height)
-#   G — (unit test only: nonce-wrap timestamp)
 #   H — Restart consistency (kill all, restart, verify same tip)
 # Phases I-M: UTXO validation stress tests:
 #   I — Double-spend attack
@@ -40,12 +39,12 @@ set -uo pipefail
 #   bash scripts/chaos_test.sh [--skip PHASES]   # legacy backend invocation
 #
 #   --skip accepts a comma-separated list of phase IDs or group aliases:
-#     Phase IDs: 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,A,B,C,D,E,F,G,H,I,J,K,L,M,16
+#     Phase IDs: 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,A,B,C,D,E,F,H,I,J,K,L,M,16
 #     Group aliases:
 #       chaos       — phases 0-9 (network chaos)
 #       adversarial — phases 10-15 (adversarial attacks)
-#       consensus   — phases A-H (consensus stress)
-#       utxo        — phases I-K (UTXO validation)
+#       consensus   — phases A-F,H (consensus stress)
+#       utxo        — phases I-M (UTXO validation)
 #
 #   Example: --skip chaos,adversarial  (run only consensus + UTXO + final)
 #   Example: --skip 0,1,2,3,I,J,K     (skip specific phases)
@@ -77,7 +76,7 @@ expand_skip_groups() {
         case "$part" in
             chaos)       expanded="${expanded},0,1,2,3,4,5,6,7,8,9" ;;
             adversarial) expanded="${expanded},10,11,12,13,14,15" ;;
-            consensus)   expanded="${expanded},A,B,C,D,E,F,G,H" ;;
+            consensus)   expanded="${expanded},A,B,C,D,E,F,H" ;;
             utxo)        expanded="${expanded},I,J,K,L,M" ;;
             *)           expanded="${expanded},${part}" ;;
         esac

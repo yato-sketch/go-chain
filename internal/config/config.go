@@ -242,6 +242,11 @@ func (c *Config) LegacyDBPath() string {
 	return filepath.Join(c.NetworkDataDir(), "blocks.db")
 }
 
+// WalletDir returns the path to the wallet directory for key storage.
+func (c *Config) WalletDir() string {
+	return filepath.Join(c.NetworkDataDir(), "wallet")
+}
+
 // EnsureDataDir creates the full data directory tree for the current network.
 func (c *Config) EnsureDataDir() error {
 	dirs := []string{
@@ -249,6 +254,7 @@ func (c *Config) EnsureDataDir() error {
 		c.BlocksDir(),
 		c.BlockIndexDir(),
 		c.ChainstateDir(),
+		c.WalletDir(),
 	}
 	for _, dir := range dirs {
 		if err := os.MkdirAll(dir, 0700); err != nil {
