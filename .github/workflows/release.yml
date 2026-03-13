@@ -31,10 +31,27 @@ jobs:
       - name: Build release artifacts
         run: |
           mkdir -p dist
-          GOOS=linux GOARCH=amd64 go build -o dist/fairchain-node-linux-amd64 ./cmd/node
-          GOOS=linux GOARCH=amd64 go build -o dist/fairchain-cli-linux-amd64 ./cmd/cli
-          cp scripts/chaos_test.py dist/chaos_test.py
-          chmod +x dist/fairchain-node-linux-amd64 dist/fairchain-cli-linux-amd64 dist/chaos_test.py
+          mkdir -p dist/bundle-linux-amd64 dist/bundle-windows-amd64 dist/bundle-macos-amd64
+
+          GOOS=linux GOARCH=amd64 go build -o dist/bundle-linux-amd64/fairchain-node ./cmd/node
+          GOOS=linux GOARCH=amd64 go build -o dist/bundle-linux-amd64/fairchain-cli ./cmd/cli
+
+          GOOS=windows GOARCH=amd64 go build -o dist/bundle-windows-amd64/fairchain-node.exe ./cmd/node
+          GOOS=windows GOARCH=amd64 go build -o dist/bundle-windows-amd64/fairchain-cli.exe ./cmd/cli
+
+          GOOS=darwin GOARCH=amd64 go build -o dist/bundle-macos-amd64/fairchain-node ./cmd/node
+          GOOS=darwin GOARCH=amd64 go build -o dist/bundle-macos-amd64/fairchain-cli ./cmd/cli
+
+          cp scripts/chaos_test.py dist/bundle-linux-amd64/chaos_test.py
+          cp scripts/chaos_test.py dist/bundle-windows-amd64/chaos_test.py
+          cp scripts/chaos_test.py dist/bundle-macos-amd64/chaos_test.py
+
+          chmod +x dist/bundle-linux-amd64/fairchain-node dist/bundle-linux-amd64/fairchain-cli dist/bundle-linux-amd64/chaos_test.py
+          chmod +x dist/bundle-macos-amd64/fairchain-node dist/bundle-macos-amd64/fairchain-cli dist/bundle-macos-amd64/chaos_test.py
+
+          tar -C dist -czf dist/fairchain-linux-amd64.tar.gz bundle-linux-amd64
+          tar -C dist -czf dist/fairchain-windows-amd64.tar.gz bundle-windows-amd64
+          tar -C dist -czf dist/fairchain-macos-amd64.tar.gz bundle-macos-amd64
 
       - name: Create release notes
         run: |
@@ -45,9 +62,9 @@ jobs:
 
           ## Included Assets
 
-          - `fairchain-node-linux-amd64`
-          - `fairchain-cli-linux-amd64`
-          - `chaos_test.py`
+          - `fairchain-linux-amd64.tar.gz`
+          - `fairchain-windows-amd64.tar.gz`
+          - `fairchain-macos-amd64.tar.gz`
           EOF
 
       - name: Create GitHub release
@@ -57,6 +74,6 @@ jobs:
           gh release create "${{ github.event.inputs.tag }}" \
             --title "${{ github.event.inputs.title }}" \
             --notes-file dist/RELEASE_NOTES.md \
-            dist/fairchain-node-linux-amd64 \
-            dist/fairchain-cli-linux-amd64 \
-            dist/chaos_test.py
+            dist/fairchain-linux-amd64.tar.gz \
+            dist/fairchain-windows-amd64.tar.gz \
+            dist/fairchain-macos-amd64.tar.gz
