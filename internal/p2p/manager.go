@@ -856,7 +856,11 @@ func (m *Manager) handlePeer(ctx context.Context, peer *Peer) {
 			return
 		}
 
-		if !peer.CheckRateLimit() {
+		// During IBD the sync peer legitimately floods us with blocks in
+		// response to getblocks; penalizing that traffic would ban the very
+		// peer we need. Bitcoin Core similarly relaxes DoS scoring during
+		// initial block download.
+		if !peer.CheckRateLimit() && !m.IsSyncing() {
 			m.addMisbehavior(peer, 10, "message rate limit exceeded")
 			if peer.BanScore() >= BanThreshold {
 				return
