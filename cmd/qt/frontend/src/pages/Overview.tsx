@@ -5,6 +5,7 @@ import {
   GetWalletAddress,
   GetBlockchainInfo,
 } from "../../wailsjs/go/main/App";
+import { Button } from "@/components/ui/button";
 
 export function Overview() {
   const coinInfo = useCoinInfo();
@@ -75,6 +76,7 @@ export function Overview() {
               {bestHash ? bestHash.slice(0, 16) + "..." : "—"}
             </dd>
           </div>
+          <Button>Send</Button>
         </dl>
       </div>
     </div>
