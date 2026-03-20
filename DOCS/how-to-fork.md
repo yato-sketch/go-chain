@@ -50,6 +50,7 @@ const (
     CLIName           = "mychain-cli"       // CLI binary name
     GenesisToolName   = "mychain-genesis"   // Genesis tool binary name
     AdversaryToolName = "mychain-adversary" // Adversary tool binary name
+    GUIName           = "mychain-qt"       // GUI wallet binary name
     DefaultDataDirName = ".mychain"         // Data directory (~/.mychain)
     ConfFileName      = "mychain.conf"      // Config file name
     CoinbaseTag       = "mychain"           // Tag in mined coinbase transactions
@@ -212,18 +213,83 @@ Optional flags:
 - `-message "your genesis message"` — custom coinbase message
 - `-timestamp 1700000000` — specific Unix timestamp (default: now)
 
-## Step 7: Update Build Files
+## Step 7: Build System (Automatic)
 
-### Makefile
+The build system follows the standard Unix `./configure && make` pattern, modeled after Bitcoin Core. All binary names are derived from `coinparams.go` — there is nothing to manually rename in the Makefile or CI.
 
-Update the binary name variables at the top of `Makefile` to match your `coinparams.go`:
+### Configure and build
+
+```bash
+# Daemon + CLI only (default)
+./configure
+make build
+
+# Include the GUI wallet
+./configure --with-qt
+make build
+
+# See all options
+./configure --help
+```
+
+The `./configure` script:
+- Detects Go, npm, Wails CLI, WebKit2GTK, and other dependencies
+- Resolves full absolute paths to all tools (no PATH issues)
+- Auto-detects the correct WebKit version (4.0 vs 4.1) and sets the right build tag
+- Writes `config.mk` which the Makefile includes
+- Accepts Bitcoin Core-style flags: `--with-qt`, `--without-qt`, `--with-wallet`, etc.
+
+### How naming works
+
+`scripts/coinparams.sh` parses the Go constants and emits Makefile-compatible variable assignments. The Makefile includes this output at parse time:
 
 ```makefile
-DAEMON_NAME   := mychaind
-CLI_NAME      := mychain-cli
-GENESIS_NAME  := mychain-genesis
-ADVERSARY_NAME := mychain-adversary
+# Generated automatically from coinparams.go:
+DAEMON_NAME := mychaind
+CLI_NAME := mychain-cli
+GUI_NAME := mychain-qt
+# ... etc
 ```
+
+After editing `coinparams.go`, just re-run `./configure && make build` — everything is correctly named.
+
+### Configure options
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--with-qt` | off | Build the GUI wallet (requires Wails CLI + npm + WebKit2GTK) |
+| `--without-qt` | — | Explicitly disable GUI wallet |
+| `--with-wallet` | on | (Future) Build with wallet support |
+| `--without-wallet` | — | (Future) Disable wallet support |
+| `--with-mining` | on | (Future) Build with built-in miner |
+| `--without-mining` | — | (Future) Disable built-in miner |
+| `--prefix=PATH` | `/usr/local` | Installation prefix |
+
+### Make targets
+
+```bash
+make build       # build according to ./configure flags
+make qt          # build just the GUI wallet
+make qt-dev      # GUI wallet with hot reload (development)
+make daemon      # build just the daemon
+make cli         # build just the CLI
+make test        # run tests
+make clean       # remove build artifacts
+make distclean   # remove build artifacts + config.mk
+```
+
+### GUI wallet prerequisites
+
+To build with `--with-qt`, install these first:
+
+- **Go 1.21+**
+- **Node.js 15+** and **npm**
+- **Wails CLI**: `go install github.com/wailsapp/wails/v2/cmd/wails@latest`
+- **Linux**: `sudo apt install libgtk-3-dev libwebkit2gtk-4.1-dev`
+- **macOS**: Xcode command line tools
+- **Windows**: WebView2 runtime (included in Windows 11, downloadable for Windows 10)
+
+The configure script will detect all of these and tell you what's missing.
 
 ### Systemd Service (optional)
 
@@ -234,14 +300,19 @@ If deploying on Linux, update `scripts/fairchain-testnet.service`:
 - Data directory
 - Log paths
 
-### CI Workflows (optional)
+### CI Workflows (automatic)
 
-Update `.github/workflows/` files with your binary names and release artifact names.
+The `.github/workflows/release.yml` workflow also reads from `scripts/coinparams.sh`. Binary names and archive names are derived automatically — no manual editing needed.
 
 ## Step 8: Build and Run
 
 ```bash
-# Build all binaries
+# Configure and build
+./configure
+make build
+
+# Or with the GUI wallet
+./configure --with-qt
 make build
 
 # Run a node with mining enabled
@@ -358,9 +429,10 @@ The chain manager, miner, P2P layer, and RPC server all consume this interface �
 
 | What to change | Where |
 |----------------|-------|
-| Chain identity (name, ticker, binaries) | `internal/coinparams/coinparams.go` |
+| Chain identity (name, ticker, binaries, GUI name) | `internal/coinparams/coinparams.go` |
 | PoW algorithm | `coinparams.Algorithm` + `internal/algorithms/` |
 | Network parameters (timing, difficulty, economics) | `internal/params/networks.go` |
 | Genesis block | Run `bin/mychain-genesis`, paste output into `networks.go` |
-| Binary names in build | `Makefile` top-level variables |
+| Binary names in build | Automatic — derived from `coinparams.go` via `scripts/coinparams.sh` |
 | Go module path | `go.mod` + all import paths |
+| GUI wallet build | `./configure --with-qt && make build` |

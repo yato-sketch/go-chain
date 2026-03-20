@@ -11,9 +11,18 @@ bin/
 __pycache__/
 *.pyc
 
+# Node.js (GUI wallet frontend)
+node_modules/
+cmd/qt/frontend/dist/
+cmd/qt/build/bin/
+
 # Go build cache
 *.test
 *.out
+
+# Generated Makefile includes (from ./configure and scripts/coinparams.sh)
+config.mk
+coinparams.mk
 
 # IDE / Editor
 .idea/

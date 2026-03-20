@@ -28,6 +28,7 @@ Everything in go-chain ships with the fork out of the box:
 - Three-network model (mainnet, testnet, regtest) with full parameterization
 - Reorg support with undo data
 - bitcoin-cli compatible command-line client
+- GUI wallet with embedded daemon (Wails v2 + React), built with `make build WITH_QT=1`
 
 ## What Fairchain Will Add
 

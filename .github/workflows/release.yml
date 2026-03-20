@@ -1,27 +1,82 @@
-# Branding values sourced from internal/coinparams/coinparams.go
+# All binary and archive names derived from internal/coinparams/coinparams.go
+# via scripts/coinparams.sh. To rebrand: edit coinparams.go only.
 name: Release
 
 on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Release tag (e.g. v0.2.0-testnet-live.1)"
+        description: "Release tag (e.g. v0.3.0)"
         required: true
       title:
         description: "Release title"
         required: true
-        default: "Testnet Live Release"
+        default: "Release"
+      prerelease:
+        description: "Mark as pre-release"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
 
 jobs:
-  build-and-release:
+  # ── Extract coin parameters (shared by all build jobs) ───────────────────
+  params:
     runs-on: ubuntu-latest
+    outputs:
+      coin_name: ${{ steps.extract.outputs.coin_name }}
+      coin_name_lower: ${{ steps.extract.outputs.coin_name_lower }}
+      daemon_name: ${{ steps.extract.outputs.daemon_name }}
+      cli_name: ${{ steps.extract.outputs.cli_name }}
+      gui_name: ${{ steps.extract.outputs.gui_name }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: extract
+        run: |
+          eval $(bash scripts/coinparams.sh --env)
+          echo "coin_name=$COIN_NAME" >> "$GITHUB_OUTPUT"
+          echo "coin_name_lower=$COIN_NAME_LOWER" >> "$GITHUB_OUTPUT"
+          echo "daemon_name=$DAEMON_NAME" >> "$GITHUB_OUTPUT"
+          echo "cli_name=$CLI_NAME" >> "$GITHUB_OUTPUT"
+          echo "gui_name=$GUI_NAME" >> "$GITHUB_OUTPUT"
+
+  # ── Build daemon + CLI for each platform ─────────────────────────────────
+  build:
+    needs: params
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            goos: linux
+            goarch: amd64
+            label: linux-amd64
+          - runner: ubuntu-latest
+            goos: linux
+            goarch: arm64
+            label: linux-arm64
+          - runner: macos-latest
+            goos: darwin
+            goarch: amd64
+            label: macos-amd64
+          - runner: macos-latest
+            goos: darwin
+            goarch: arm64
+            label: macos-arm64
+          - runner: windows-latest
+            goos: windows
+            goarch: amd64
+            label: windows-amd64
+
+    runs-on: ${{ matrix.runner }}
+    env:
+      DAEMON_NAME: ${{ needs.params.outputs.daemon_name }}
+      CLI_NAME: ${{ needs.params.outputs.cli_name }}
+      COIN_NAME_LOWER: ${{ needs.params.outputs.coin_name_lower }}
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -29,52 +84,138 @@ jobs:
           go-version-file: go.mod
           check-latest: true
 
-      - name: Build release artifacts
+      - name: Build binaries
+        shell: bash
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
         run: |
-          mkdir -p dist
-          mkdir -p dist/bundle-linux-amd64 dist/bundle-windows-amd64 dist/bundle-macos-amd64
+          mkdir -p staging
 
-          GOOS=linux GOARCH=amd64 go build -o dist/bundle-linux-amd64/fairchaind ./cmd/node
-          GOOS=linux GOARCH=amd64 go build -o dist/bundle-linux-amd64/fairchain-cli ./cmd/cli
+          EXT=""
+          if [ "$GOOS" = "windows" ]; then EXT=".exe"; fi
 
-          GOOS=windows GOARCH=amd64 go build -o dist/bundle-windows-amd64/fairchaind.exe ./cmd/node
-          GOOS=windows GOARCH=amd64 go build -o dist/bundle-windows-amd64/fairchain-cli.exe ./cmd/cli
+          go build -trimpath -ldflags="-s -w" -o "staging/${DAEMON_NAME}${EXT}" ./cmd/node
+          go build -trimpath -ldflags="-s -w" -o "staging/${CLI_NAME}${EXT}" ./cmd/cli
 
-          GOOS=darwin GOARCH=amd64 go build -o dist/bundle-macos-amd64/fairchaind ./cmd/node
-          GOOS=darwin GOARCH=amd64 go build -o dist/bundle-macos-amd64/fairchain-cli ./cmd/cli
+          # Include chaos test script.
+          cp scripts/chaos_test.py staging/
 
-          cp scripts/chaos_test.py dist/bundle-linux-amd64/chaos_test.py
-          cp scripts/chaos_test.py dist/bundle-windows-amd64/chaos_test.py
-          cp scripts/chaos_test.py dist/bundle-macos-amd64/chaos_test.py
+      - name: Package (tar.gz for Unix)
+        if: matrix.goos != 'windows'
+        shell: bash
+        run: |
+          ARCHIVE="${COIN_NAME_LOWER}-${{ matrix.label }}.tar.gz"
+          tar -C staging -czf "$ARCHIVE" .
+          echo "ARCHIVE=$ARCHIVE" >> "$GITHUB_ENV"
 
-          chmod +x dist/bundle-linux-amd64/fairchaind dist/bundle-linux-amd64/fairchain-cli dist/bundle-linux-amd64/chaos_test.py
-          chmod +x dist/bundle-macos-amd64/fairchaind dist/bundle-macos-amd64/fairchain-cli dist/bundle-macos-amd64/chaos_test.py
+      - name: Package (zip for Windows)
+        if: matrix.goos == 'windows'
+        shell: bash
+        run: |
+          ARCHIVE="${COIN_NAME_LOWER}-${{ matrix.label }}.zip"
+          cd staging && zip -r "../$ARCHIVE" . && cd ..
+          echo "ARCHIVE=$ARCHIVE" >> "$GITHUB_ENV"
 
-          tar -C dist -czf dist/fairchain-linux-amd64.tar.gz bundle-linux-amd64
-          tar -C dist -czf dist/fairchain-windows-amd64.tar.gz bundle-windows-amd64
-          tar -C dist -czf dist/fairchain-macos-amd64.tar.gz bundle-macos-amd64
+      - name: Generate SHA256
+        shell: bash
+        run: |
+          if command -v sha256sum &>/dev/null; then
+            sha256sum "$ARCHIVE" > "${ARCHIVE}.sha256"
+          else
+            shasum -a 256 "$ARCHIVE" > "${ARCHIVE}.sha256"
+          fi
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.label }}
+          path: |
+            ${{ env.ARCHIVE }}
+            ${{ env.ARCHIVE }}.sha256
+
+  # ── Create GitHub release with all artifacts ─────────────────────────────
+  release:
+    needs: [params, build]
+    runs-on: ubuntu-latest
+    env:
+      COIN_NAME: ${{ needs.params.outputs.coin_name }}
+      COIN_NAME_LOWER: ${{ needs.params.outputs.coin_name_lower }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: List artifacts
+        run: ls -lhR dist/
+
+      - name: Generate combined checksums
+        run: |
+          cd dist
+          cat *.sha256 > "${COIN_NAME_LOWER}-SHA256SUMS.txt"
+          echo "Generated checksums:"
+          cat "${COIN_NAME_LOWER}-SHA256SUMS.txt"
 
       - name: Create release notes
         run: |
-          cat > dist/RELEASE_NOTES.md <<'EOF'
-          ## Testnet Live
+          cat > dist/RELEASE_NOTES.md <<EOF
+          ## ${COIN_NAME} — ${{ inputs.title }}
 
-          Testnet is LIVE and large bounties are available for anyone who can break consensus and provide the exact steps taken so they can be reproduced.
+          ### Downloads
 
-          ## Included Assets
+          | Platform | Architecture | Archive |
+          |----------|-------------|---------|
+          | Linux | x86_64 | \`${COIN_NAME_LOWER}-linux-amd64.tar.gz\` |
+          | Linux | ARM64 | \`${COIN_NAME_LOWER}-linux-arm64.tar.gz\` |
+          | macOS | x86_64 (Intel) | \`${COIN_NAME_LOWER}-macos-amd64.tar.gz\` |
+          | macOS | ARM64 (Apple Silicon) | \`${COIN_NAME_LOWER}-macos-arm64.tar.gz\` |
+          | Windows | x86_64 | \`${COIN_NAME_LOWER}-windows-amd64.zip\` |
 
-          - `fairchain-linux-amd64.tar.gz`
-          - `fairchain-windows-amd64.tar.gz`
-          - `fairchain-macos-amd64.tar.gz`
+          ### Verify downloads
+
+          \`\`\`bash
+          sha256sum -c ${COIN_NAME_LOWER}-SHA256SUMS.txt
+          \`\`\`
+
+          ### Quick start
+
+          \`\`\`bash
+          # Extract
+          tar xzf ${COIN_NAME_LOWER}-linux-amd64.tar.gz
+
+          # Run daemon
+          ./${COIN_NAME_LOWER}d -network testnet -mine
+
+          # Check status (in another terminal)
+          ./${COIN_NAME_LOWER}-cli getblockchaininfo
+          \`\`\`
           EOF
+
+          # Strip leading whitespace from heredoc indentation.
+          sed -i 's/^          //' dist/RELEASE_NOTES.md
 
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "${{ github.event.inputs.tag }}" \
-            --title "${{ github.event.inputs.title }}" \
+          PRERELEASE_FLAG=""
+          if [ "${{ inputs.prerelease }}" = "true" ]; then
+            PRERELEASE_FLAG="--prerelease"
+          fi
+
+          gh release create "${{ inputs.tag }}" \
+            --title "${{ inputs.title }}" \
             --notes-file dist/RELEASE_NOTES.md \
-            dist/fairchain-linux-amd64.tar.gz \
-            dist/fairchain-windows-amd64.tar.gz \
-            dist/fairchain-macos-amd64.tar.gz
+            $PRERELEASE_FLAG \
+            dist/${COIN_NAME_LOWER}-linux-amd64.tar.gz \
+            dist/${COIN_NAME_LOWER}-linux-arm64.tar.gz \
+            dist/${COIN_NAME_LOWER}-macos-amd64.tar.gz \
+            dist/${COIN_NAME_LOWER}-macos-arm64.tar.gz \
+            dist/${COIN_NAME_LOWER}-windows-amd64.zip \
+            dist/${COIN_NAME_LOWER}-SHA256SUMS.txt

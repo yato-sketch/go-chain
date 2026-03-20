@@ -1,0 +1,240 @@
+#!/usr/bin/env bash
+# configure — detect build environment and write config.mk
+#
+# Usage:
+#   ./configure                  # auto-detect everything, GUI off by default
+#   ./configure --with-qt        # enable GUI wallet build
+#   ./configure --without-qt     # explicitly disable GUI wallet
+#   ./configure --prefix=/usr    # set install prefix
+#
+# Modeled after Bitcoin Core's ./configure. Writes config.mk which the
+# Makefile includes. Run once after cloning or when dependencies change.
+set -euo pipefail
+
+# ─── Defaults ────────────────────────────────────────────────────────────────
+WITH_QT="auto"
+WITH_WALLET=1
+WITH_MINING=1
+PREFIX="/usr/local"
+
+# ─── Parse arguments ─────────────────────────────────────────────────────────
+for arg in "$@"; do
+    case "$arg" in
+        --with-qt)       WITH_QT="yes" ;;
+        --without-qt)    WITH_QT="no"  ;;
+        --with-wallet)   WITH_WALLET=1 ;;
+        --without-wallet) WITH_WALLET=0 ;;
+        --with-mining)   WITH_MINING=1 ;;
+        --without-mining) WITH_MINING=0 ;;
+        --prefix=*)      PREFIX="${arg#--prefix=}" ;;
+        --help|-h)
+            echo "Usage: ./configure [OPTIONS]"
+            echo ""
+            echo "Options:"
+            echo "  --with-qt          Enable GUI wallet build (requires Wails, npm, WebKit2GTK)"
+            echo "  --without-qt       Disable GUI wallet build (default)"
+            echo "  --with-wallet      Enable wallet support (default: on)"
+            echo "  --without-wallet   Disable wallet support"
+            echo "  --with-mining      Enable built-in miner (default: on)"
+            echo "  --without-mining   Disable built-in miner"
+            echo "  --prefix=PATH      Installation prefix (default: /usr/local)"
+            echo "  --help             Show this help"
+            exit 0
+            ;;
+        *)
+            echo "ERROR: unknown option: $arg" >&2
+            echo "Run ./configure --help for usage." >&2
+            exit 1
+            ;;
+    esac
+done
+
+# ─── Helpers ─────────────────────────────────────────────────────────────────
+ok()   { printf "  %-30s %s\n" "$1" "yes ($2)"; }
+no()   { printf "  %-30s %s\n" "$1" "no"; }
+fail() { printf "  %-30s %s\n" "$1" "MISSING"; echo "ERROR: $2" >&2; exit 1; }
+warn() { printf "  %-30s %s\n" "$1" "no (optional)"; }
+
+echo ""
+echo "Configuring $(basename "$(pwd)")..."
+echo ""
+echo "Checking dependencies:"
+
+# ─── Required: Go ────────────────────────────────────────────────────────────
+GO=""
+for candidate in go /usr/local/go/bin/go /snap/bin/go; do
+    if command -v "$candidate" &>/dev/null; then
+        GO="$(command -v "$candidate")"
+        break
+    fi
+done
+if [ -z "$GO" ]; then
+    fail "go" "Go compiler not found. Install from https://go.dev/dl/"
+fi
+GO_VERSION="$($GO version | awk '{print $3}' | sed 's/go//')"
+ok "go" "$GO_VERSION — $GO"
+
+# ─── Required: bash ──────────────────────────────────────────────────────────
+ok "bash" "$BASH_VERSION"
+
+# ─── Required: pkg-config ────────────────────────────────────────────────────
+if command -v pkg-config &>/dev/null; then
+    ok "pkg-config" "$(pkg-config --version)"
+else
+    warn "pkg-config"
+fi
+
+# ─── GOPATH/bin detection ────────────────────────────────────────────────────
+GOPATH_BIN="$($GO env GOPATH)/bin"
+
+# ─── Optional: Wails CLI ─────────────────────────────────────────────────────
+WAILS=""
+for candidate in "$GOPATH_BIN/wails" wails; do
+    if [ -x "$candidate" ]; then
+        WAILS="$(readlink -f "$candidate")"
+        break
+    elif command -v "$candidate" &>/dev/null 2>&1; then
+        WAILS="$(command -v "$candidate")"
+        break
+    fi
+done
+
+WAILS_VERSION=""
+if [ -n "$WAILS" ]; then
+    WAILS_VERSION="$($WAILS version 2>/dev/null | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || echo "unknown")"
+    ok "wails" "$WAILS_VERSION — $WAILS"
+else
+    warn "wails"
+fi
+
+# ─── Optional: npm ───────────────────────────────────────────────────────────
+NPM=""
+if command -v npm &>/dev/null; then
+    NPM="$(command -v npm)"
+    ok "npm" "$(npm --version) — $NPM"
+else
+    warn "npm"
+fi
+
+# ─── Optional: WebKit2GTK (Linux only) ──────────────────────────────────────
+WEBKIT_TAG=""
+WEBKIT_VERSION=""
+if [ "$(uname)" = "Linux" ]; then
+    if command -v pkg-config &>/dev/null; then
+        if pkg-config --exists webkit2gtk-4.1 2>/dev/null; then
+            WEBKIT_VERSION="$(pkg-config --modversion webkit2gtk-4.1)"
+            WEBKIT_TAG="webkit2_41"
+            ok "webkit2gtk" "4.1 ($WEBKIT_VERSION)"
+        elif pkg-config --exists webkit2gtk-4.0 2>/dev/null; then
+            WEBKIT_VERSION="$(pkg-config --modversion webkit2gtk-4.0)"
+            WEBKIT_TAG=""
+            ok "webkit2gtk" "4.0 ($WEBKIT_VERSION)"
+        else
+            warn "webkit2gtk"
+        fi
+    else
+        warn "webkit2gtk (pkg-config missing)"
+    fi
+
+    if command -v pkg-config &>/dev/null && pkg-config --exists gtk+-3.0 2>/dev/null; then
+        ok "gtk+-3.0" "$(pkg-config --modversion gtk+-3.0)"
+    else
+        warn "gtk+-3.0"
+    fi
+fi
+
+# ─── Resolve --with-qt ──────────────────────────────────────────────────────
+QT_ENABLED=0
+QT_REASON=""
+
+if [ "$WITH_QT" = "yes" ]; then
+    # User explicitly requested Qt — fail hard if deps are missing.
+    MISSING=""
+    [ -z "$WAILS" ] && MISSING="$MISSING wails"
+    [ -z "$NPM" ] && MISSING="$MISSING npm"
+    if [ "$(uname)" = "Linux" ] && [ -z "$WEBKIT_VERSION" ]; then
+        MISSING="$MISSING webkit2gtk"
+    fi
+    if [ -n "$MISSING" ]; then
+        echo ""
+        echo "ERROR: --with-qt requested but missing dependencies:$MISSING" >&2
+        echo "" >&2
+        echo "Install them:" >&2
+        echo "  Wails:     go install github.com/wailsapp/wails/v2/cmd/wails@latest" >&2
+        echo "  npm:       sudo apt install npm  (or use nvm)" >&2
+        echo "  WebKit:    sudo apt install libgtk-3-dev libwebkit2gtk-4.1-dev" >&2
+        exit 1
+    fi
+    QT_ENABLED=1
+    QT_REASON="requested via --with-qt"
+elif [ "$WITH_QT" = "auto" ]; then
+    # Auto-detect: enable only if all deps are present.
+    if [ -n "$WAILS" ] && [ -n "$NPM" ]; then
+        if [ "$(uname)" != "Linux" ] || [ -n "$WEBKIT_VERSION" ]; then
+            QT_ENABLED=1
+            QT_REASON="auto-detected"
+        fi
+    fi
+    if [ "$QT_ENABLED" = "0" ]; then
+        QT_REASON="dependencies not found (use --with-qt to see what's missing)"
+    fi
+else
+    QT_REASON="disabled via --without-qt"
+fi
+
+# ─── Extract coinparams ─────────────────────────────────────────────────────
+echo ""
+echo "Extracting coin parameters..."
+bash scripts/coinparams.sh > coinparams.mk
+echo "  Source: internal/coinparams/coinparams.go"
+
+# Read back for display.
+eval "$(bash scripts/coinparams.sh --env)"
+echo "  Coin:   $COIN_NAME ($COIN_NAME_LOWER)"
+echo "  Daemon: $DAEMON_NAME"
+echo "  CLI:    $CLI_NAME"
+echo "  GUI:    $GUI_NAME"
+
+# ─── Write config.mk ────────────────────────────────────────────────────────
+CONFIG_MK="config.mk"
+cat > "$CONFIG_MK" <<EOF
+# Generated by ./configure — do not edit.
+# Re-run ./configure to regenerate.
+
+# Tool paths
+GO := $GO
+WAILS := $WAILS
+NPM := $NPM
+
+# Build flags
+WITH_QT := $QT_ENABLED
+WITH_WALLET := $WITH_WALLET
+WITH_MINING := $WITH_MINING
+
+# WebKit build tag (webkit2_41 for 4.1, empty for 4.0)
+WEBKIT_TAG := $WEBKIT_TAG
+
+# Install prefix
+PREFIX := $PREFIX
+EOF
+
+# ─── Summary ─────────────────────────────────────────────────────────────────
+echo ""
+echo "Build configuration:"
+echo "  GUI wallet (qt):       $([ "$QT_ENABLED" = "1" ] && echo "YES" || echo "no") ($QT_REASON)"
+echo "  Wallet support:        $([ "$WITH_WALLET" = "1" ] && echo "YES" || echo "no")"
+echo "  Mining support:        $([ "$WITH_MINING" = "1" ] && echo "YES" || echo "no")"
+if [ "$QT_ENABLED" = "1" ] && [ -n "$WEBKIT_TAG" ]; then
+    echo "  WebKit build tag:      $WEBKIT_TAG"
+fi
+echo "  Install prefix:        $PREFIX"
+echo ""
+echo "Configuration written to $CONFIG_MK"
+echo ""
+if [ "$QT_ENABLED" = "1" ]; then
+    echo "Run:  make build        # builds $DAEMON_NAME, $CLI_NAME, $GUI_NAME"
+else
+    echo "Run:  make build        # builds $DAEMON_NAME, $CLI_NAME"
+    echo "      ./configure --with-qt && make build   # to also build $GUI_NAME"
+fi
+echo ""

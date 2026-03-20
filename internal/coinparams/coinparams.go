@@ -33,6 +33,9 @@ const (
 	// AdversaryToolName is the binary name for the adversary testing tool.
 	AdversaryToolName = "fairchain-adversary"
 
+	// GUIName is the binary name for the GUI wallet (e.g., "fairchain-qt").
+	GUIName = "fairchain-qt"
+
 	// DefaultDataDirName is the hidden directory name in the user's home (e.g., ".fairchain").
 	DefaultDataDirName = ".fairchain"
 
