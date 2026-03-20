@@ -112,13 +112,14 @@ jobs:
 
       - name: Package (zip for Windows)
         if: matrix.goos == 'windows'
-        shell: bash
+        shell: pwsh
         run: |
-          ARCHIVE="${COIN_NAME_LOWER}-${{ matrix.label }}.zip"
-          cd staging && zip -r "../$ARCHIVE" . && cd ..
-          echo "ARCHIVE=$ARCHIVE" >> "$GITHUB_ENV"
+          $archive = "${env:COIN_NAME_LOWER}-${{ matrix.label }}.zip"
+          Compress-Archive -Path staging\* -DestinationPath $archive
+          "ARCHIVE=$archive" | Out-File -Append -FilePath $env:GITHUB_ENV
 
-      - name: Generate SHA256
+      - name: Generate SHA256 (Unix)
+        if: matrix.goos != 'windows'
         shell: bash
         run: |
           if command -v sha256sum &>/dev/null; then
@@ -126,6 +127,13 @@ jobs:
           else
             shasum -a 256 "$ARCHIVE" > "${ARCHIVE}.sha256"
           fi
+
+      - name: Generate SHA256 (Windows)
+        if: matrix.goos == 'windows'
+        shell: pwsh
+        run: |
+          $hash = (Get-FileHash $env:ARCHIVE -Algorithm SHA256).Hash.ToLower()
+          "$hash  $($env:ARCHIVE)" | Out-File -Encoding ascii "${env:ARCHIVE}.sha256"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
