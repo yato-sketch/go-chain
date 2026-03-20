@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# configure — detect build environment and write config.mk
+# configure -- detect build environment and write config.mk
 #
 # Usage:
 #   ./configure                  # auto-detect everything, GUI off by default
@@ -11,13 +11,14 @@
 # Makefile includes. Run once after cloning or when dependencies change.
 set -euo pipefail
 
-# ─── Defaults ────────────────────────────────────────────────────────────────
+# --- Defaults ----------------------------------------------------------------
 WITH_QT="auto"
 WITH_WALLET=1
 WITH_MINING=1
 PREFIX="/usr/local"
+MIN_NODE_MAJOR=20
 
-# ─── Parse arguments ─────────────────────────────────────────────────────────
+# --- Parse arguments ---------------------------------------------------------
 for arg in "$@"; do
     case "$arg" in
         --with-qt)       WITH_QT="yes" ;;
@@ -31,7 +32,7 @@ for arg in "$@"; do
             echo "Usage: ./configure [OPTIONS]"
             echo ""
             echo "Options:"
-            echo "  --with-qt          Enable GUI wallet build (requires Wails, npm, WebKit2GTK)"
+            echo "  --with-qt          Enable GUI wallet build (requires Wails, npm, Node >= $MIN_NODE_MAJOR, WebKit2GTK)"
             echo "  --without-qt       Disable GUI wallet build (default)"
             echo "  --with-wallet      Enable wallet support (default: on)"
             echo "  --without-wallet   Disable wallet support"
@@ -49,7 +50,7 @@ for arg in "$@"; do
     esac
 done
 
-# ─── Helpers ─────────────────────────────────────────────────────────────────
+# --- Helpers -----------------------------------------------------------------
 ok()   { printf "  %-30s %s\n" "$1" "yes ($2)"; }
 no()   { printf "  %-30s %s\n" "$1" "no"; }
 fail() { printf "  %-30s %s\n" "$1" "MISSING"; echo "ERROR: $2" >&2; exit 1; }
@@ -60,7 +61,7 @@ echo "Configuring $(basename "$(pwd)")..."
 echo ""
 echo "Checking dependencies:"
 
-# ─── Required: Go ────────────────────────────────────────────────────────────
+# --- Required: Go ------------------------------------------------------------
 GO=""
 for candidate in go /usr/local/go/bin/go /snap/bin/go; do
     if command -v "$candidate" &>/dev/null; then
@@ -72,22 +73,22 @@ if [ -z "$GO" ]; then
     fail "go" "Go compiler not found. Install from https://go.dev/dl/"
 fi
 GO_VERSION="$($GO version | awk '{print $3}' | sed 's/go//')"
-ok "go" "$GO_VERSION — $GO"
+ok "go" "$GO_VERSION -- $GO"
 
-# ─── Required: bash ──────────────────────────────────────────────────────────
+# --- Required: bash ----------------------------------------------------------
 ok "bash" "$BASH_VERSION"
 
-# ─── Required: pkg-config ────────────────────────────────────────────────────
+# --- Required: pkg-config ----------------------------------------------------
 if command -v pkg-config &>/dev/null; then
     ok "pkg-config" "$(pkg-config --version)"
 else
     warn "pkg-config"
 fi
 
-# ─── GOPATH/bin detection ────────────────────────────────────────────────────
+# --- GOPATH/bin detection ----------------------------------------------------
 GOPATH_BIN="$($GO env GOPATH)/bin"
 
-# ─── Optional: Wails CLI ─────────────────────────────────────────────────────
+# --- Optional: Wails CLI -----------------------------------------------------
 WAILS=""
 for candidate in "$GOPATH_BIN/wails" wails; do
     if [ -x "$candidate" ]; then
@@ -102,21 +103,90 @@ done
 WAILS_VERSION=""
 if [ -n "$WAILS" ]; then
     WAILS_VERSION="$($WAILS version 2>/dev/null | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || echo "unknown")"
-    ok "wails" "$WAILS_VERSION — $WAILS"
+    ok "wails" "$WAILS_VERSION -- $WAILS"
 else
     warn "wails"
 fi
 
-# ─── Optional: npm ───────────────────────────────────────────────────────────
+# --- Optional: Node.js + npm -------------------------------------------------
+# Tailwind CSS v4 requires Node >= 20 for @tailwindcss/oxide native bindings.
+# If nvm is installed, source it and try to activate a compatible version
+# (reading .nvmrc if present, otherwise installing the minimum required).
+
 NPM=""
+NODE=""
+NODE_VERSION=""
+NODE_MAJOR=0
+NVM_ACTIVATED=0
+
+NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
+if [ -s "$NVM_DIR/nvm.sh" ]; then
+    . "$NVM_DIR/nvm.sh" --no-use 2>/dev/null || true
+
+    # Try .nvmrc first, fall back to minimum required major.
+    NVMRC="cmd/qt/frontend/.nvmrc"
+    if [ -f "$NVMRC" ]; then
+        DESIRED_MAJOR="$(cat "$NVMRC" | tr -d '[:space:]' | cut -d. -f1)"
+    else
+        DESIRED_MAJOR="$MIN_NODE_MAJOR"
+    fi
+
+    # Try the desired major first, then fall back to any installed >= MIN_NODE_MAJOR.
+    if nvm ls "$DESIRED_MAJOR" &>/dev/null 2>&1; then
+        nvm use "$DESIRED_MAJOR" --silent &>/dev/null 2>&1 && NVM_ACTIVATED=1
+    else
+        # .nvmrc version not installed -- try any version >= MIN_NODE_MAJOR.
+        FALLBACK=""
+        for v in $(nvm ls --no-colors 2>/dev/null | grep -oE 'v[0-9]+' | sed 's/v//' | sort -rn | uniq); do
+            if [ "$v" -ge "$MIN_NODE_MAJOR" ]; then
+                FALLBACK="$v"
+                break
+            fi
+        done
+
+        if [ -n "$FALLBACK" ]; then
+            nvm use "$FALLBACK" --silent &>/dev/null 2>&1 && NVM_ACTIVATED=1
+        else
+            # No compatible version installed -- offer to install.
+            echo ""
+            echo "  Node.js >= $MIN_NODE_MAJOR is required for the GUI frontend (Tailwind v4)."
+            echo "  nvm is available but no compatible Node version is installed."
+            echo ""
+            read -rp "  Install Node $DESIRED_MAJOR via nvm now? [Y/n] " REPLY
+            REPLY="${REPLY:-Y}"
+            if [[ "$REPLY" =~ ^[Yy]$ ]]; then
+                echo "  Installing Node $DESIRED_MAJOR..."
+                nvm install "$DESIRED_MAJOR" &>/dev/null
+                nvm use "$DESIRED_MAJOR" --silent &>/dev/null 2>&1 && NVM_ACTIVATED=1
+            fi
+        fi
+    fi
+fi
+
+if command -v node &>/dev/null; then
+    NODE="$(command -v node)"
+    NODE_VERSION="$(node --version | sed 's/^v//')"
+    NODE_MAJOR="${NODE_VERSION%%.*}"
+fi
+
 if command -v npm &>/dev/null; then
     NPM="$(command -v npm)"
-    ok "npm" "$(npm --version) — $NPM"
+    ok "npm" "$(npm --version) -- $NPM"
 else
     warn "npm"
 fi
 
-# ─── Optional: WebKit2GTK (Linux only) ──────────────────────────────────────
+if [ -n "$NODE" ]; then
+    if [ "$NODE_MAJOR" -ge "$MIN_NODE_MAJOR" ]; then
+        ok "node" "v$NODE_VERSION -- $NODE"
+    else
+        printf "  %-30s %s\n" "node" "v$NODE_VERSION (NEEDS >= $MIN_NODE_MAJOR)"
+    fi
+else
+    warn "node"
+fi
+
+# --- Optional: WebKit2GTK (Linux only) ---------------------------------------
 WEBKIT_TAG=""
 WEBKIT_VERSION=""
 if [ "$(uname)" = "Linux" ]; then
@@ -143,15 +213,21 @@ if [ "$(uname)" = "Linux" ]; then
     fi
 fi
 
-# ─── Resolve --with-qt ──────────────────────────────────────────────────────
+# --- Resolve --with-qt -------------------------------------------------------
 QT_ENABLED=0
 QT_REASON=""
+NODE_TOO_OLD=0
+
+if [ -n "$NODE" ] && [ "$NODE_MAJOR" -lt "$MIN_NODE_MAJOR" ]; then
+    NODE_TOO_OLD=1
+fi
 
 if [ "$WITH_QT" = "yes" ]; then
-    # User explicitly requested Qt — fail hard if deps are missing.
     MISSING=""
     [ -z "$WAILS" ] && MISSING="$MISSING wails"
     [ -z "$NPM" ] && MISSING="$MISSING npm"
+    [ -z "$NODE" ] && MISSING="$MISSING node"
+    [ "$NODE_TOO_OLD" = "1" ] && MISSING="$MISSING node>=$MIN_NODE_MAJOR"
     if [ "$(uname)" = "Linux" ] && [ -z "$WEBKIT_VERSION" ]; then
         MISSING="$MISSING webkit2gtk"
     fi
@@ -161,15 +237,16 @@ if [ "$WITH_QT" = "yes" ]; then
         echo "" >&2
         echo "Install them:" >&2
         echo "  Wails:     go install github.com/wailsapp/wails/v2/cmd/wails@latest" >&2
-        echo "  npm:       sudo apt install npm  (or use nvm)" >&2
+        echo "  Node.js:   curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash" >&2
+        echo "             nvm install $MIN_NODE_MAJOR" >&2
+        echo "  npm:       comes with Node.js (or: sudo apt install npm)" >&2
         echo "  WebKit:    sudo apt install libgtk-3-dev libwebkit2gtk-4.1-dev" >&2
         exit 1
     fi
     QT_ENABLED=1
     QT_REASON="requested via --with-qt"
 elif [ "$WITH_QT" = "auto" ]; then
-    # Auto-detect: enable only if all deps are present.
-    if [ -n "$WAILS" ] && [ -n "$NPM" ]; then
+    if [ -n "$WAILS" ] && [ -n "$NPM" ] && [ -n "$NODE" ] && [ "$NODE_TOO_OLD" = "0" ]; then
         if [ "$(uname)" != "Linux" ] || [ -n "$WEBKIT_VERSION" ]; then
             QT_ENABLED=1
             QT_REASON="auto-detected"
@@ -182,29 +259,29 @@ else
     QT_REASON="disabled via --without-qt"
 fi
 
-# ─── Extract coinparams ─────────────────────────────────────────────────────
+# --- Extract coinparams ------------------------------------------------------
 echo ""
 echo "Extracting coin parameters..."
 bash scripts/coinparams.sh > coinparams.mk
 echo "  Source: internal/coinparams/coinparams.go"
 
-# Read back for display.
 eval "$(bash scripts/coinparams.sh --env)"
 echo "  Coin:   $COIN_NAME ($COIN_NAME_LOWER)"
 echo "  Daemon: $DAEMON_NAME"
 echo "  CLI:    $CLI_NAME"
 echo "  GUI:    $GUI_NAME"
 
-# ─── Write config.mk ────────────────────────────────────────────────────────
+# --- Write config.mk ---------------------------------------------------------
 CONFIG_MK="config.mk"
 cat > "$CONFIG_MK" <<EOF
-# Generated by ./configure — do not edit.
+# Generated by ./configure -- do not edit.
 # Re-run ./configure to regenerate.
 
 # Tool paths
 GO := $GO
 WAILS := $WAILS
 NPM := $NPM
+NODE := $NODE
 
 # Build flags
 WITH_QT := $QT_ENABLED
@@ -218,7 +295,17 @@ WEBKIT_TAG := $WEBKIT_TAG
 PREFIX := $PREFIX
 EOF
 
-# ─── Summary ─────────────────────────────────────────────────────────────────
+# If nvm was activated, write a shell snippet the Makefile can source.
+if [ "$NVM_ACTIVATED" = "1" ]; then
+    cat >> "$CONFIG_MK" <<EOF
+
+# nvm activation (source this in shell steps that need node/npm)
+NVM_DIR := $NVM_DIR
+NVM_NODE_VERSION := $NODE_MAJOR
+EOF
+fi
+
+# --- Summary ------------------------------------------------------------------
 echo ""
 echo "Build configuration:"
 echo "  GUI wallet (qt):       $([ "$QT_ENABLED" = "1" ] && echo "YES" || echo "no") ($QT_REASON)"

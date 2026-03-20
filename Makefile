@@ -20,11 +20,20 @@ BINDIR := bin
 GO           ?= go
 WAILS        ?=
 NPM          ?= npm
+NODE         ?=
 WITH_QT      ?= 0
 WITH_WALLET  ?= 1
 WITH_MINING  ?= 1
 WEBKIT_TAG   ?=
 PREFIX       ?= /usr/local
+NVM_DIR      ?= $(HOME)/.nvm
+NVM_NODE_VERSION ?=
+
+# Shell preamble that activates nvm if configure detected it.
+NVM_SHELL :=
+ifneq ($(NVM_NODE_VERSION),)
+NVM_SHELL := export NVM_DIR="$(NVM_DIR)" && . "$(NVM_DIR)/nvm.sh" --no-use && nvm use $(NVM_NODE_VERSION) --silent &&
+endif
 
 # --- Extract branding from coinparams.go ---
 coinparams.mk: internal/coinparams/coinparams.go scripts/coinparams.sh
@@ -67,7 +76,7 @@ qt:
 ifeq ($(WAILS),)
 	$(error Wails not found. Run: ./configure --with-qt)
 endif
-	cd cmd/qt && $(WAILS) build $(WAILS_BUILD_FLAGS)
+	$(NVM_SHELL) cd cmd/qt && $(WAILS) build $(WAILS_BUILD_FLAGS)
 	@mkdir -p $(BINDIR)
 	cp cmd/qt/build/bin/$(GUI_NAME) $(BINDIR)/$(GUI_NAME)
 
@@ -75,7 +84,7 @@ qt-dev:
 ifeq ($(WAILS),)
 	$(error Wails not found. Run: ./configure --with-qt)
 endif
-	cd cmd/qt && $(WAILS) dev $(WAILS_BUILD_FLAGS)
+	$(NVM_SHELL) cd cmd/qt && $(WAILS) dev $(WAILS_BUILD_FLAGS)
 
 # --- Test / lint / fmt ---
 test:
