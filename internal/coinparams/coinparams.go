@@ -1,3 +1,9 @@
+// Copyright (c) 2024-2026 The Fairchain Contributors
+// Fairchain is an experiment in modularity, designed to improve on the work
+// of Satoshi Nakamoto and to inspire more creative genius in the space.
+// Distributed under the MIT software license, see the accompanying
+// file COPYING or http://www.opensource.org/licenses/mit-license.php.
+
 package coinparams
 
 import "math"
@@ -76,7 +82,9 @@ const (
 	// DifficultyAlgorithm is the difficulty retargeting algorithm name.
 	// Must match a registered algorithm in internal/difficulty/.
 	// Changing this is a consensus / hard-fork change.
-	// Options: "bitcoin" (Nakamoto-style epoch retarget with EDA),
-	//          "lwma"    (zawy12 LWMA-1, per-block adjustment, responsive to hash rate swings)
+	// Options: "bitcoin"    (Nakamoto-style epoch retarget with EDA),
+	//          "lwma"       (zawy12 LWMA-1, per-block weighted moving average),
+	//          "dgw"        (Dark Gravity Wave v3, per-block averaging, Dash-style),
+	//          "digishield" (DigiShield v3, per-block asymmetric dampening, Dogecoin/Zcash-style)
 	DifficultyAlgorithm = "bitcoin"
 )

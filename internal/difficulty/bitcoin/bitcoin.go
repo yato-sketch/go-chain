@@ -1,3 +1,9 @@
+// Copyright (c) 2024-2026 The Fairchain Contributors
+// Fairchain is an experiment in modularity, designed to improve on the work
+// of Satoshi Nakamoto and to inspire more creative genius in the space.
+// Distributed under the MIT software license, see the accompanying
+// file COPYING or http://www.opensource.org/licenses/mit-license.php.
+
 package bitcoin
 
 import (
@@ -12,8 +18,7 @@ import (
 )
 
 // Retargeter implements Nakamoto-style epoch-based difficulty adjustment,
-// matching Bitcoin Core's GetNextWorkRequired logic with additional
-// emergency difficulty adjustment for small networks.
+// matching Bitcoin Core's GetNextWorkRequired logic.
 type Retargeter struct{}
 
 func New() *Retargeter { return &Retargeter{} }
@@ -29,30 +34,6 @@ func (r *Retargeter) CalcNextBits(tip *types.BlockHeader, tipHeight uint32, getA
 	}
 
 	nextHeight := tipHeight + 1
-
-	// Emergency difficulty adjustment for small networks: if the previous
-	// block took more than 10x the target spacing, reduce difficulty by 20%
-	// to prevent chain stalls when hash rate drops suddenly. Cooldown: only
-	// fires within the first 6 blocks of each retarget window to prevent
-	// cascading compounding drops (Bitcoin Cash EDA exploit mitigation).
-	if p.TargetBlockSpacing > 0 && nextHeight > 1 && nextHeight%p.RetargetInterval < 6 {
-		getAncestorHeader := getAncestor(tipHeight)
-		prevHeader := getAncestor(tipHeight - 1)
-		if getAncestorHeader != nil && prevHeader != nil {
-			blockTime := int64(getAncestorHeader.Timestamp) - int64(prevHeader.Timestamp)
-			emergencyThreshold := int64(p.TargetBlockSpacing.Seconds()) * 10
-			if blockTime > emergencyThreshold {
-				oldTarget := crypto.CompactToBig(tip.Bits)
-				newTarget := new(big.Int).Mul(oldTarget, big.NewInt(5))
-				newTarget.Div(newTarget, big.NewInt(4))
-				maxTarget := crypto.CompactToBig(p.MinBits)
-				if newTarget.Cmp(maxTarget) > 0 {
-					newTarget = maxTarget
-				}
-				return crypto.BigToCompact(newTarget)
-			}
-		}
-	}
 
 	if nextHeight%p.RetargetInterval != 0 {
 		return tip.Bits

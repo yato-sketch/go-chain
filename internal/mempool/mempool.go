@@ -1,3 +1,9 @@
+// Copyright (c) 2024-2026 The Fairchain Contributors
+// Fairchain is an experiment in modularity, designed to improve on the work
+// of Satoshi Nakamoto and to inspire more creative genius in the space.
+// Distributed under the MIT software license, see the accompanying
+// file COPYING or http://www.opensource.org/licenses/mit-license.php.
+
 package mempool
 
 import (
@@ -101,8 +107,39 @@ func (m *Mempool) AddTx(tx *types.Transaction) (types.Hash, error) {
 		}
 	}
 
+	// Build supplemental UTXO entries from unconfirmed mempool parents so that
+	// child transactions can spend unconfirmed outputs (CPFP). Only outputs
+	// that are not already spent by another mempool transaction are included.
+	var supplemental map[[36]byte]*utxo.UtxoEntry
+	for _, in := range tx.Inputs {
+		opKey := utxo.OutpointKey(in.PreviousOutPoint.Hash, in.PreviousOutPoint.Index)
+		if m.utxoSet.Has(in.PreviousOutPoint.Hash, in.PreviousOutPoint.Index) {
+			continue
+		}
+		parentEntry, ok := m.txs[in.PreviousOutPoint.Hash]
+		if !ok {
+			continue
+		}
+		idx := in.PreviousOutPoint.Index
+		if int(idx) >= len(parentEntry.Tx.Outputs) {
+			continue
+		}
+		if _, spent := m.spentOutpoints[opKey]; spent {
+			continue
+		}
+		if supplemental == nil {
+			supplemental = make(map[[36]byte]*utxo.UtxoEntry)
+		}
+		out := parentEntry.Tx.Outputs[idx]
+		supplemental[opKey] = &utxo.UtxoEntry{
+			Value:    out.Value,
+			PkScript: out.PkScript,
+			Height:   0,
+		}
+	}
+
 	// Validate against the UTXO set (input existence, maturity, value).
-	fee, err := consensus.ValidateSingleTransaction(tx, m.utxoSet, m.tipHeightFn(), m.p)
+	fee, err := consensus.ValidateSingleTransaction(tx, m.utxoSet, m.tipHeightFn(), m.p, supplemental)
 	if err != nil {
 		return types.ZeroHash, fmt.Errorf("validation failed: %w", err)
 	}

@@ -1,3 +1,9 @@
+// Copyright (c) 2024-2026 The Fairchain Contributors
+// Fairchain is an experiment in modularity, designed to improve on the work
+// of Satoshi Nakamoto and to inspire more creative genius in the space.
+// Distributed under the MIT software license, see the accompanying
+// file COPYING or http://www.opensource.org/licenses/mit-license.php.
+
 package utxo
 
 import (
@@ -255,8 +261,10 @@ func (s *Set) ConnectBlock(block *types.Block, height uint32) (*BlockUndoData, e
 
 				// Check in-block created outputs first, then the persistent set.
 				var entry *UtxoEntry
+				createdInThisBlock := false
 				if e, ok := createdInBlock[key]; ok {
 					entry = e
+					createdInThisBlock = true
 				} else {
 					s.mu.RLock()
 					entry = s.entries[key]
@@ -268,10 +276,16 @@ func (s *Set) ConnectBlock(block *types.Block, height uint32) (*BlockUndoData, e
 						txHash, in.PreviousOutPoint.Hash, in.PreviousOutPoint.Index)
 				}
 
-				undo.SpentOutputs = append(undo.SpentOutputs, SpentOutput{
-					OutPoint: in.PreviousOutPoint,
-					Entry:    *entry,
-				})
+				// Only record spends of pre-existing UTXOs in the undo log.
+				// Outputs created and consumed within the same block have no
+				// prior state to restore on disconnect — their creation is
+				// already undone by removing the block's outputs.
+				if !createdInThisBlock {
+					undo.SpentOutputs = append(undo.SpentOutputs, SpentOutput{
+						OutPoint: in.PreviousOutPoint,
+						Entry:    *entry,
+					})
+				}
 				spentInBlock[key] = struct{}{}
 				toRemove = append(toRemove, key)
 				delete(createdInBlock, key)

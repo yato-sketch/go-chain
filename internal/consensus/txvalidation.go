@@ -1,3 +1,9 @@
+// Copyright (c) 2024-2026 The Fairchain Contributors
+// Fairchain is an experiment in modularity, designed to improve on the work
+// of Satoshi Nakamoto and to inspire more creative genius in the space.
+// Distributed under the MIT software license, see the accompanying
+// file COPYING or http://www.opensource.org/licenses/mit-license.php.
+
 package consensus
 
 import (
@@ -71,7 +77,11 @@ func CheckSequenceLocks(tx *types.Transaction, blockHeight uint32, blockMedianTi
 
 		entry := utxoSet.Get(in.PreviousOutPoint.Hash, in.PreviousOutPoint.Index)
 		if entry == nil {
-			continue // UTXO existence is validated elsewhere.
+			// The disable flag is already checked above, so reaching here
+			// means this input has an active relative locktime. Skipping
+			// would silently bypass BIP68 enforcement for unconfirmed
+			// parent outputs (CPFP chains in mempool). Fail-safe: reject.
+			return fmt.Errorf("tx input %d: cannot verify relative locktime — UTXO not found", inIdx)
 		}
 
 		if in.Sequence&SequenceLockTimeTypeFlag != 0 {
@@ -105,16 +115,24 @@ func CheckSequenceLocks(tx *types.Transaction, blockHeight uint32, blockMedianTi
 //   - total input value >= total output value (no value creation)
 //   - coinbase value <= subsidy + total fees (with overflow protection)
 //
+// medianTimePast is the BIP113 median-time-past of the parent chain, computed
+// from the preceding 11 blocks. Callers must pre-compute this via
+// consensus.CalcMedianTimePast and pass it in. This matches Bitcoin Core's
+// GetMedianTimePast() usage for locktime enforcement.
+//
 // Returns the total fees collected by all non-coinbase transactions.
-func ValidateTransactionInputs(block *types.Block, utxoSet *utxo.Set, height uint32, p *params.ChainParams) (uint64, error) {
-	// Use block timestamp as median time proxy for locktime enforcement.
-	// Bitcoin Core uses median-time-past (BIP113); block timestamp is a safe
-	// upper bound since blocks must have timestamp > MTP.
-	medianTime := block.Header.Timestamp
+func ValidateTransactionInputs(block *types.Block, utxoSet *utxo.Set, height uint32, p *params.ChainParams, medianTimePast uint32) (uint64, error) {
+	medianTime := medianTimePast
 	var totalFees uint64
 
 	// Track outpoints spent within this block to detect intra-block double spends.
 	spentInBlock := make(map[[36]byte]struct{})
+
+	// Track outputs created by earlier transactions in this block so that
+	// later transactions can spend them (intra-block transaction chaining).
+	// Bitcoin Core maintains a CCoinsViewCache that layers block-local
+	// changes over the persistent UTXO set; this map serves the same role.
+	createdInBlock := make(map[[36]byte]*utxo.UtxoEntry)
 
 	for txIdx := range block.Transactions {
 		tx := &block.Transactions[txIdx]
@@ -123,6 +141,19 @@ func ValidateTransactionInputs(block *types.Block, utxoSet *utxo.Set, height uin
 			for outIdx, out := range tx.Outputs {
 				if out.Value == 0 {
 					return 0, fmt.Errorf("coinbase output %d: zero value not allowed", outIdx)
+				}
+			}
+			cbHash, err := crypto.HashTransaction(tx)
+			if err != nil {
+				return 0, fmt.Errorf("hash coinbase tx: %w", err)
+			}
+			for outIdx, out := range tx.Outputs {
+				key := utxo.OutpointKey(cbHash, uint32(outIdx))
+				createdInBlock[key] = &utxo.UtxoEntry{
+					Value:      out.Value,
+					PkScript:   out.PkScript,
+					Height:     height,
+					IsCoinbase: true,
 				}
 			}
 			continue
@@ -147,6 +178,9 @@ func ValidateTransactionInputs(block *types.Block, utxoSet *utxo.Set, height uin
 		// Detect duplicate inputs within this single transaction.
 		seenInputs := make(map[[36]byte]struct{}, len(tx.Inputs))
 
+		// Resolved entries for each input, used for script validation below.
+		resolvedEntries := make([]*utxo.UtxoEntry, len(tx.Inputs))
+
 		var totalIn uint64
 		for inIdx, in := range tx.Inputs {
 			opKey := utxo.OutpointKey(in.PreviousOutPoint.Hash, in.PreviousOutPoint.Index)
@@ -162,11 +196,19 @@ func ValidateTransactionInputs(block *types.Block, utxoSet *utxo.Set, height uin
 					txHash, inIdx, in.PreviousOutPoint.Hash, in.PreviousOutPoint.Index)
 			}
 
-			entry := utxoSet.Get(in.PreviousOutPoint.Hash, in.PreviousOutPoint.Index)
+			// Resolve from in-block outputs first, then the persistent UTXO set.
+			var entry *utxo.UtxoEntry
+			if e, ok := createdInBlock[opKey]; ok {
+				entry = e
+			} else {
+				entry = utxoSet.Get(in.PreviousOutPoint.Hash, in.PreviousOutPoint.Index)
+			}
 			if entry == nil {
 				return 0, fmt.Errorf("tx %s input %d: references missing UTXO %s:%d",
 					txHash, inIdx, in.PreviousOutPoint.Hash, in.PreviousOutPoint.Index)
 			}
+
+			resolvedEntries[inIdx] = entry
 
 			if entry.IsCoinbase {
 				if height < entry.Height {
@@ -191,6 +233,7 @@ func ValidateTransactionInputs(block *types.Block, utxoSet *utxo.Set, height uin
 				return 0, fmt.Errorf("tx %s: cumulative input value %d exceeds max money %d", txHash, totalIn, params.MaxMoneyValue)
 			}
 			spentInBlock[opKey] = struct{}{}
+			delete(createdInBlock, opKey)
 		}
 
 		var totalOut uint64
@@ -206,37 +249,50 @@ func ValidateTransactionInputs(block *types.Block, utxoSet *utxo.Set, height uin
 			}
 			totalOut += out.Value
 		}
+		if totalOut > params.MaxMoneyValue {
+			return 0, fmt.Errorf("tx %s: total output value %d exceeds max money %d", txHash, totalOut, params.MaxMoneyValue)
+		}
 
 		if totalIn < totalOut {
 			return 0, fmt.Errorf("tx %s: input value %d < output value %d", txHash, totalIn, totalOut)
 		}
 
-	// Script validation: verify each input's SignatureScript satisfies the
-	// referenced UTXO's PkScript. This is the spend authorization check.
-	for inIdx, in := range tx.Inputs {
-		entry := utxoSet.Get(in.PreviousOutPoint.Hash, in.PreviousOutPoint.Index)
-		if entry == nil {
-			continue // already validated above
+		// Register this transaction's outputs for potential intra-block spending.
+		for outIdx, out := range tx.Outputs {
+			key := utxo.OutpointKey(txHash, uint32(outIdx))
+			createdInBlock[key] = &utxo.UtxoEntry{
+				Value:      out.Value,
+				PkScript:   out.PkScript,
+				Height:     height,
+				IsCoinbase: false,
+			}
 		}
-		if script.IsLegacyUnvalidatedScript(entry.PkScript) {
-			continue
-		}
-		if err := script.Verify(in.SignatureScript, entry.PkScript, tx, inIdx); err != nil {
-			return 0, fmt.Errorf("tx %s input %d: script validation failed: %w", txHash, inIdx, err)
-		}
-	}
 
-	// LockTime and BIP68 relative locktime enforcement, gated by activation height.
-	if locktimeHeight, ok := p.ActivationHeights["locktime"]; ok && height >= locktimeHeight {
-		if err := CheckTransactionFinality(tx, height, medianTime); err != nil {
-			return 0, fmt.Errorf("tx %s: %w", txHash, err)
+		// Script validation using the entries resolved during input validation.
+		for inIdx, in := range tx.Inputs {
+			entry := resolvedEntries[inIdx]
+			if entry == nil {
+				continue
+			}
+			if script.IsLegacyUnvalidatedScript(entry.PkScript) {
+				continue
+			}
+			if err := script.Verify(in.SignatureScript, entry.PkScript, tx, inIdx); err != nil {
+				return 0, fmt.Errorf("tx %s input %d: script validation failed: %w", txHash, inIdx, err)
+			}
 		}
-		if err := CheckSequenceLocks(tx, height, medianTime, utxoSet); err != nil {
-			return 0, fmt.Errorf("tx %s: %w", txHash, err)
-		}
-	}
 
-	fee := totalIn - totalOut
+		// LockTime and BIP68 relative locktime enforcement, gated by activation height.
+		if locktimeHeight, ok := p.ActivationHeights["locktime"]; ok && height >= locktimeHeight {
+			if err := CheckTransactionFinality(tx, height, medianTime); err != nil {
+				return 0, fmt.Errorf("tx %s: %w", txHash, err)
+			}
+			if err := CheckSequenceLocks(tx, height, medianTime, utxoSet); err != nil {
+				return 0, fmt.Errorf("tx %s: %w", txHash, err)
+			}
+		}
+
+		fee := totalIn - totalOut
 		if totalFees+fee < totalFees {
 			return 0, fmt.Errorf("total fees overflow at tx %d", txIdx)
 		}
@@ -265,7 +321,12 @@ func ValidateTransactionInputs(block *types.Block, utxoSet *utxo.Set, height uin
 
 // ValidateSingleTransaction checks a single non-coinbase transaction against the UTXO set.
 // Used for mempool admission. Returns the fee if valid.
-func ValidateSingleTransaction(tx *types.Transaction, utxoSet *utxo.Set, tipHeight uint32, p *params.ChainParams) (uint64, error) {
+//
+// supplementalUtxos provides additional UTXO entries not yet in the persistent
+// set (e.g., outputs of unconfirmed mempool parents for CPFP). The persistent
+// utxoSet is checked first; supplementalUtxos is consulted only as a fallback.
+// Pass nil when no supplemental entries are needed.
+func ValidateSingleTransaction(tx *types.Transaction, utxoSet *utxo.Set, tipHeight uint32, p *params.ChainParams, supplementalUtxos map[[36]byte]*utxo.UtxoEntry) (uint64, error) {
 	if tx.IsCoinbase() {
 		return 0, fmt.Errorf("coinbase transactions cannot be validated individually")
 	}
@@ -291,6 +352,9 @@ func ValidateSingleTransaction(tx *types.Transaction, utxoSet *utxo.Set, tipHeig
 
 	spendHeight := tipHeight + 1
 
+	// Resolved entries for script validation below.
+	resolvedEntries := make([]*utxo.UtxoEntry, len(tx.Inputs))
+
 	var totalIn uint64
 	for inIdx, in := range tx.Inputs {
 		opKey := utxo.OutpointKey(in.PreviousOutPoint.Hash, in.PreviousOutPoint.Index)
@@ -301,10 +365,15 @@ func ValidateSingleTransaction(tx *types.Transaction, utxoSet *utxo.Set, tipHeig
 		seenInputs[opKey] = struct{}{}
 
 		entry := utxoSet.Get(in.PreviousOutPoint.Hash, in.PreviousOutPoint.Index)
+		if entry == nil && supplementalUtxos != nil {
+			entry = supplementalUtxos[opKey]
+		}
 		if entry == nil {
 			return 0, fmt.Errorf("tx %s input %d: references missing UTXO %s:%d",
 				txHash, inIdx, in.PreviousOutPoint.Hash, in.PreviousOutPoint.Index)
 		}
+
+		resolvedEntries[inIdx] = entry
 
 		if entry.IsCoinbase {
 			if spendHeight < entry.Height {
@@ -343,14 +412,17 @@ func ValidateSingleTransaction(tx *types.Transaction, utxoSet *utxo.Set, tipHeig
 		}
 		totalOut += out.Value
 	}
+	if totalOut > params.MaxMoneyValue {
+		return 0, fmt.Errorf("tx %s: total output value %d exceeds max money %d", txHash, totalOut, params.MaxMoneyValue)
+	}
 
 	if totalIn < totalOut {
 		return 0, fmt.Errorf("tx %s: input value %d < output value %d", txHash, totalIn, totalOut)
 	}
 
-	// Script validation for mempool admission.
+	// Script validation for mempool admission using previously resolved entries.
 	for inIdx, in := range tx.Inputs {
-		entry := utxoSet.Get(in.PreviousOutPoint.Hash, in.PreviousOutPoint.Index)
+		entry := resolvedEntries[inIdx]
 		if entry == nil {
 			continue
 		}
@@ -379,32 +451,35 @@ func ValidateSingleTransaction(tx *types.Transaction, utxoSet *utxo.Set, tipHeig
 }
 
 // CalcTxFee computes the fee for a transaction given the UTXO set.
-// Returns 0 for coinbase transactions or on overflow.
-func CalcTxFee(tx *types.Transaction, utxoSet *utxo.Set) uint64 {
+// Returns an error if any input references a missing UTXO or on overflow.
+// Returns 0 fee for coinbase transactions.
+func CalcTxFee(tx *types.Transaction, utxoSet *utxo.Set) (uint64, error) {
 	if tx.IsCoinbase() {
-		return 0
+		return 0, nil
 	}
 	var totalIn uint64
-	for _, in := range tx.Inputs {
+	for inIdx, in := range tx.Inputs {
 		entry := utxoSet.Get(in.PreviousOutPoint.Hash, in.PreviousOutPoint.Index)
-		if entry != nil {
-			prev := totalIn
-			totalIn += entry.Value
-			if totalIn < prev {
-				return 0
-			}
+		if entry == nil {
+			return 0, fmt.Errorf("input %d: references missing UTXO %s:%d",
+				inIdx, in.PreviousOutPoint.Hash, in.PreviousOutPoint.Index)
+		}
+		prev := totalIn
+		totalIn += entry.Value
+		if totalIn < prev {
+			return 0, fmt.Errorf("input value overflow at input %d", inIdx)
 		}
 	}
 	var totalOut uint64
-	for _, out := range tx.Outputs {
+	for outIdx, out := range tx.Outputs {
 		prev := totalOut
 		totalOut += out.Value
 		if totalOut < prev {
-			return 0
+			return 0, fmt.Errorf("output value overflow at output %d", outIdx)
 		}
 	}
-	if totalIn <= totalOut {
-		return 0
+	if totalIn < totalOut {
+		return 0, fmt.Errorf("input value %d < output value %d", totalIn, totalOut)
 	}
-	return totalIn - totalOut
+	return totalIn - totalOut, nil
 }

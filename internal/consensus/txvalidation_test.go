@@ -1,3 +1,9 @@
+// Copyright (c) 2024-2026 The Fairchain Contributors
+// Fairchain is an experiment in modularity, designed to improve on the work
+// of Satoshi Nakamoto and to inspire more creative genius in the space.
+// Distributed under the MIT software license, see the accompanying
+// file COPYING or http://www.opensource.org/licenses/mit-license.php.
+
 package consensus
 
 import (
@@ -143,7 +149,7 @@ func TestValidateTransactionInputs_ScriptValidation_RejectsStealUTXO(t *testing.
 		Transactions: []types.Transaction{coinbase, stealTx},
 	}
 
-	_, err = ValidateTransactionInputs(block, utxoSet, height, p)
+	_, err = ValidateTransactionInputs(block, utxoSet, height, p, 0)
 	if err == nil {
 		t.Fatal("steal-utxo attack should be rejected by script validation in ValidateTransactionInputs")
 	}
@@ -205,7 +211,7 @@ func TestValidateTransactionInputs_ScriptValidation_AcceptsValidSig(t *testing.T
 		Transactions: []types.Transaction{coinbase, spendTx},
 	}
 
-	fees, err := ValidateTransactionInputs(block, utxoSet, height, p)
+	fees, err := ValidateTransactionInputs(block, utxoSet, height, p, 0)
 	if err != nil {
 		t.Fatalf("valid signed transaction should pass: %v", err)
 	}
@@ -258,7 +264,7 @@ func TestValidateTransactionInputs_ScriptValidation_RejectsBurnSpend(t *testing.
 		Transactions: []types.Transaction{coinbase, stealTx},
 	}
 
-	_, err := ValidateTransactionInputs(block, utxoSet, height, p)
+	_, err := ValidateTransactionInputs(block, utxoSet, height, p, 0)
 	if err == nil {
 		t.Fatal("steal-premine attack should be rejected by script validation")
 	}
@@ -306,7 +312,7 @@ func TestValidateTransactionInputs_LegacyScriptRejected(t *testing.T) {
 		Transactions: []types.Transaction{coinbase, spendTx},
 	}
 
-	_, err := ValidateTransactionInputs(block, utxoSet, height, p)
+	_, err := ValidateTransactionInputs(block, utxoSet, height, p, 0)
 	if err == nil {
 		t.Fatal("legacy {0x00} script should now be rejected by script validation")
 	}
@@ -340,7 +346,7 @@ func TestValidateSingleTransaction_ScriptValidation_RejectsSteal(t *testing.T) {
 		Outputs: []types.TxOutput{{Value: 999_000, PkScript: []byte("attacker")}},
 	}
 
-	_, err = ValidateSingleTransaction(stealTx, utxoSet, 100, p)
+	_, err = ValidateSingleTransaction(stealTx, utxoSet, 100, p, nil)
 	if err == nil {
 		t.Fatal("mempool should reject transaction with invalid script")
 	}
@@ -383,7 +389,7 @@ func TestValidateSingleTransaction_ScriptValidation_AcceptsValid(t *testing.T) {
 	}
 	spendTx.Inputs[0].SignatureScript = sigScript
 
-	fee, err := ValidateSingleTransaction(spendTx, utxoSet, 100, p)
+	fee, err := ValidateSingleTransaction(spendTx, utxoSet, 100, p, nil)
 	if err != nil {
 		t.Fatalf("valid signed transaction should pass mempool validation: %v", err)
 	}
@@ -425,7 +431,7 @@ func TestDoubleSpendWithinBlock(t *testing.T) {
 	signTxInput(t, &block.Transactions[1], 0, kp)
 	signTxInput(t, &block.Transactions[2], 0, kp)
 
-	_, err := ValidateTransactionInputs(block, s, 5, p)
+	_, err := ValidateTransactionInputs(block, s, 5, p, 0)
 	if err == nil {
 		t.Fatal("expected rejection for double-spend within block")
 	}
@@ -456,7 +462,7 @@ func TestDuplicateInputsWithinTransaction(t *testing.T) {
 	signTxInput(t, &block.Transactions[1], 0, kp)
 	signTxInput(t, &block.Transactions[1], 1, kp)
 
-	_, err := ValidateTransactionInputs(block, s, 5, p)
+	_, err := ValidateTransactionInputs(block, s, 5, p, 0)
 	if err == nil {
 		t.Fatal("expected rejection for duplicate inputs within a single transaction")
 	}
@@ -485,7 +491,7 @@ func TestOverspendTransaction(t *testing.T) {
 	}
 	signTxInput(t, &block.Transactions[1], 0, kp)
 
-	_, err := ValidateTransactionInputs(block, s, 5, p)
+	_, err := ValidateTransactionInputs(block, s, 5, p, 0)
 	if err == nil {
 		t.Fatal("expected rejection for overspend (output > input)")
 	}
@@ -516,7 +522,7 @@ func TestImmatureCoinbaseSpend(t *testing.T) {
 	}
 	signTxInput(t, &block.Transactions[1], 0, kp)
 
-	_, err := ValidateTransactionInputs(block, s, 8, p)
+	_, err := ValidateTransactionInputs(block, s, 8, p, 0)
 	if err == nil {
 		t.Fatal("expected rejection for immature coinbase spend (height 5, spending at height 8, maturity 10)")
 	}
@@ -547,7 +553,7 @@ func TestMatureCoinbaseSpendAccepted(t *testing.T) {
 	}
 	signTxInput(t, &block.Transactions[1], 0, kp)
 
-	_, err := ValidateTransactionInputs(block, s, 20, p)
+	_, err := ValidateTransactionInputs(block, s, 20, p, 0)
 	if err != nil {
 		t.Fatalf("expected mature coinbase spend to be accepted: %v", err)
 	}
@@ -565,7 +571,7 @@ func TestInvalidCoinbaseReward(t *testing.T) {
 		},
 	}
 
-	_, err := ValidateTransactionInputs(block, s, 5, p)
+	_, err := ValidateTransactionInputs(block, s, 5, p, 0)
 	if err == nil {
 		t.Fatal("expected rejection for coinbase reward exceeding subsidy (no fees)")
 	}
@@ -597,7 +603,7 @@ func TestCoinbaseRewardWithFees(t *testing.T) {
 	}
 	signTxInput(t, &block.Transactions[1], 0, kp)
 
-	_, err := ValidateTransactionInputs(block, s, 5, p)
+	_, err := ValidateTransactionInputs(block, s, 5, p, 0)
 	if err != nil {
 		t.Fatalf("expected valid block with coinbase = subsidy + fees: %v", err)
 	}
@@ -629,7 +635,7 @@ func TestCoinbaseExceedingSubsidyPlusFees(t *testing.T) {
 	}
 	signTxInput(t, &block.Transactions[1], 0, kp)
 
-	_, err := ValidateTransactionInputs(block, s, 5, p)
+	_, err := ValidateTransactionInputs(block, s, 5, p, 0)
 	if err == nil {
 		t.Fatal("expected rejection for coinbase exceeding subsidy + fees")
 	}
@@ -655,7 +661,7 @@ func TestNonexistentUTXOReference(t *testing.T) {
 		},
 	}
 
-	_, err := ValidateTransactionInputs(block, s, 5, p)
+	_, err := ValidateTransactionInputs(block, s, 5, p, 0)
 	if err == nil {
 		t.Fatal("expected rejection for reference to nonexistent UTXO")
 	}
@@ -698,7 +704,7 @@ func TestBlockWithConflictingTransactions(t *testing.T) {
 	signTxInput(t, &block.Transactions[1], 1, kp)
 	signTxInput(t, &block.Transactions[2], 0, kp)
 
-	_, err := ValidateTransactionInputs(block, s, 5, p)
+	_, err := ValidateTransactionInputs(block, s, 5, p, 0)
 	if err == nil {
 		t.Fatal("expected rejection for conflicting transactions (tx2 spends same UTXO as tx1)")
 	}
@@ -729,7 +735,7 @@ func TestZeroValueOutputRejected(t *testing.T) {
 	}
 	signTxInput(t, &block.Transactions[1], 0, kp)
 
-	_, err := ValidateTransactionInputs(block, s, 5, p)
+	_, err := ValidateTransactionInputs(block, s, 5, p, 0)
 	if err == nil {
 		t.Fatal("expected rejection for zero-value output")
 	}
@@ -755,7 +761,7 @@ func TestZeroValueCoinbaseOutputRejected(t *testing.T) {
 		},
 	}
 
-	_, err := ValidateTransactionInputs(block, s, 5, p)
+	_, err := ValidateTransactionInputs(block, s, 5, p, 0)
 	if err == nil {
 		t.Fatal("expected rejection for zero-value coinbase output")
 	}
@@ -776,7 +782,7 @@ func TestNoInputsNonCoinbaseRejected(t *testing.T) {
 		},
 	}
 
-	_, err := ValidateTransactionInputs(block, s, 5, p)
+	_, err := ValidateTransactionInputs(block, s, 5, p, 0)
 	if err == nil {
 		t.Fatal("expected rejection for non-coinbase tx with no inputs")
 	}
@@ -805,7 +811,7 @@ func TestNoOutputsNonCoinbaseRejected(t *testing.T) {
 	}
 	signTxInput(t, &block.Transactions[1], 0, kp)
 
-	_, err := ValidateTransactionInputs(block, s, 5, p)
+	_, err := ValidateTransactionInputs(block, s, 5, p, 0)
 	if err == nil {
 		t.Fatal("expected rejection for non-coinbase tx with no outputs")
 	}
@@ -840,7 +846,7 @@ func TestValidBlockAccepted(t *testing.T) {
 	}
 	signTxInput(t, &block.Transactions[1], 0, kp)
 
-	fees, err := ValidateTransactionInputs(block, s, 5, p)
+	fees, err := ValidateTransactionInputs(block, s, 5, p, 0)
 	if err != nil {
 		t.Fatalf("expected valid block to be accepted: %v", err)
 	}
@@ -869,7 +875,7 @@ func TestSingleTxDuplicateInputRejected(t *testing.T) {
 	signTxInput(t, tx, 0, kp)
 	signTxInput(t, tx, 1, kp)
 
-	_, err := ValidateSingleTransaction(tx, s, 4, p)
+	_, err := ValidateSingleTransaction(tx, s, 4, p, nil)
 	if err == nil {
 		t.Fatal("expected mempool rejection for duplicate inputs in single tx")
 	}
@@ -893,7 +899,7 @@ func TestSingleTxZeroValueOutputRejected(t *testing.T) {
 	}
 	signTxInput(t, tx, 0, kp)
 
-	_, err := ValidateSingleTransaction(tx, s, 4, p)
+	_, err := ValidateSingleTransaction(tx, s, 4, p, nil)
 	if err == nil {
 		t.Fatal("expected mempool rejection for zero-value output")
 	}
@@ -917,7 +923,7 @@ func TestSingleTxOverspendRejected(t *testing.T) {
 	}
 	signTxInput(t, tx, 0, kp)
 
-	_, err := ValidateSingleTransaction(tx, s, 4, p)
+	_, err := ValidateSingleTransaction(tx, s, 4, p, nil)
 	if err == nil {
 		t.Fatal("expected mempool rejection for overspend")
 	}
@@ -938,7 +944,7 @@ func TestSingleTxMissingUTXORejected(t *testing.T) {
 		Outputs: []types.TxOutput{{Value: 100, PkScript: []byte{0x01}}},
 	}
 
-	_, err := ValidateSingleTransaction(tx, s, 4, p)
+	_, err := ValidateSingleTransaction(tx, s, 4, p, nil)
 	if err == nil {
 		t.Fatal("expected mempool rejection for missing UTXO")
 	}
@@ -964,7 +970,7 @@ func TestSingleTxImmatureCoinbaseRejected(t *testing.T) {
 	}
 	signTxInput(t, tx, 0, kp)
 
-	_, err := ValidateSingleTransaction(tx, s, 7, p)
+	_, err := ValidateSingleTransaction(tx, s, 7, p, nil)
 	if err == nil {
 		t.Fatal("expected mempool rejection for immature coinbase spend")
 	}
@@ -991,7 +997,7 @@ func TestSingleTxValidAccepted(t *testing.T) {
 	}
 	signTxInput(t, tx, 0, kp)
 
-	fee, err := ValidateSingleTransaction(tx, s, 4, p)
+	fee, err := ValidateSingleTransaction(tx, s, 4, p, nil)
 	if err != nil {
 		t.Fatalf("expected valid tx to be accepted: %v", err)
 	}
@@ -1147,7 +1153,7 @@ func TestLockTimeEnforced_InBlock_Gated(t *testing.T) {
 	}
 	signTxInput(t, &block.Transactions[1], 0, kp)
 
-	_, err := ValidateTransactionInputs(block, s, height, p)
+	_, err := ValidateTransactionInputs(block, s, height, p, block.Header.Timestamp)
 	if err == nil {
 		t.Fatal("expected rejection for unsatisfied locktime in block")
 	}
@@ -1182,7 +1188,7 @@ func TestLockTimeNotEnforced_BeforeActivation(t *testing.T) {
 	}
 	signTxInput(t, &block.Transactions[1], 0, kp)
 
-	_, err := ValidateTransactionInputs(block, s, height, p)
+	_, err := ValidateTransactionInputs(block, s, height, p, block.Header.Timestamp)
 	if err != nil {
 		t.Fatalf("locktime should not be enforced before activation: %v", err)
 	}
@@ -1216,7 +1222,7 @@ func TestSequenceLock_InBlock_Rejected(t *testing.T) {
 	}
 	signTxInput(t, &block.Transactions[1], 0, kp)
 
-	_, err := ValidateTransactionInputs(block, s, height, p)
+	_, err := ValidateTransactionInputs(block, s, height, p, block.Header.Timestamp)
 	if err == nil {
 		t.Fatal("expected rejection for unsatisfied relative locktime in block")
 	}
@@ -1250,7 +1256,7 @@ func TestSequenceLock_InBlock_Accepted(t *testing.T) {
 	}
 	signTxInput(t, &block.Transactions[1], 0, kp)
 
-	_, err := ValidateTransactionInputs(block, s, height, p)
+	_, err := ValidateTransactionInputs(block, s, height, p, block.Header.Timestamp)
 	if err != nil {
 		t.Fatalf("sequence lock should be satisfied at height 65: %v", err)
 	}
@@ -1276,7 +1282,7 @@ func TestLockTime_Mempool_Rejected(t *testing.T) {
 	}
 	signTxInput(t, tx, 0, kp)
 
-	_, err := ValidateSingleTransaction(tx, s, 10, p) // tipHeight=10, spendHeight=11
+	_, err := ValidateSingleTransaction(tx, s, 10, p, nil) // tipHeight=10, spendHeight=11
 	if err == nil {
 		t.Fatal("expected mempool rejection for unsatisfied locktime")
 	}
@@ -1302,7 +1308,7 @@ func TestLockTime_Mempool_Accepted(t *testing.T) {
 	}
 	signTxInput(t, tx, 0, kp)
 
-	_, err := ValidateSingleTransaction(tx, s, 100, p) // tipHeight=100, spendHeight=101
+	_, err := ValidateSingleTransaction(tx, s, 100, p, nil) // tipHeight=100, spendHeight=101
 	if err != nil {
 		t.Fatalf("locktime should be satisfied at height 101: %v", err)
 	}

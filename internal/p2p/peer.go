@@ -1,3 +1,9 @@
+// Copyright (c) 2024-2026 The Fairchain Contributors
+// Fairchain is an experiment in modularity, designed to improve on the work
+// of Satoshi Nakamoto and to inspire more creative genius in the space.
+// Distributed under the MIT software license, see the accompanying
+// file COPYING or http://www.opensource.org/licenses/mit-license.php.
+
 package p2p
 
 import (
@@ -93,6 +99,13 @@ const (
 	// Rate limiting: max messages per window.
 	RateLimitWindow   = 10 * time.Second
 	RateLimitMaxMsgs  = 500
+
+	// MinPeerProtoVersion is the lowest wire protocol version we accept.
+	MinPeerProtoVersion uint32 = 1
+
+	// MaxPeerStartHeight rejects peers advertising an implausibly high
+	// chain height, preventing an attacker from forcing permanent IBD mode.
+	MaxPeerStartHeight uint32 = 100_000_000
 )
 
 // NewPeer wraps a connection into a Peer.
@@ -376,6 +389,11 @@ func (p *Peer) WriteLoop() {
 	}
 }
 
+// payloadReadTimeout is the deadline for reading a declared payload once the
+// header has been received. Much shorter than readTimeout because a peer that
+// declares a large payload but trickles data is either broken or malicious.
+const payloadReadTimeout = 30 * time.Second
+
 func (p *Peer) ReadMessage() (*protocol.MessageHeader, []byte, error) {
 	p.conn.SetReadDeadline(time.Now().Add(readTimeout))
 	hdr, err := protocol.DecodeMessageHeader(p.reader)
@@ -387,9 +405,19 @@ func (p *Peer) ReadMessage() (*protocol.MessageHeader, []byte, error) {
 		return nil, nil, fmt.Errorf("bad magic from %s: got %x want %x", p.addr, hdr.Magic, p.magic)
 	}
 
-	payload := make([]byte, hdr.Length)
-	if _, err := io.ReadFull(p.reader, payload); err != nil {
+	// Tighten the deadline for the payload read: the peer declared a payload
+	// size in the header, so the data should arrive promptly. This prevents
+	// a peer from holding a large allocation hostage by trickling bytes.
+	p.conn.SetReadDeadline(time.Now().Add(payloadReadTimeout))
+
+	// Stream the payload through a limited reader instead of pre-allocating
+	// the full declared size. This bounds memory to what is actually received.
+	payload, err := io.ReadAll(io.LimitReader(p.reader, int64(hdr.Length)))
+	if err != nil {
 		return nil, nil, fmt.Errorf("read payload from %s: %w", p.addr, err)
+	}
+	if uint32(len(payload)) != hdr.Length {
+		return nil, nil, fmt.Errorf("short payload from %s: got %d want %d", p.addr, len(payload), hdr.Length)
 	}
 
 	expectedChecksum := doubleSHA256First4(payload)

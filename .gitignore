@@ -2,6 +2,8 @@
 bin/
 /node
 /adversary
+/genesis
+/qt
 *.exe
 *.dll
 *.so
@@ -46,6 +48,9 @@ data/
 
 # Chaos test run data (sequential runs)
 chaos-runs/
+
+# Modularity test run data
+modularity-runs/
 
 # Environment / secrets
 .env

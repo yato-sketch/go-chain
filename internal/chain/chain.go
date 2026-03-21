@@ -1,3 +1,9 @@
+// Copyright (c) 2024-2026 The Fairchain Contributors
+// Fairchain is an experiment in modularity, designed to improve on the work
+// of Satoshi Nakamoto and to inspire more creative genius in the space.
+// Distributed under the MIT software license, see the accompanying
+// file COPYING or http://www.opensource.org/licenses/mit-license.php.
+
 package chain
 
 import (
@@ -585,7 +591,9 @@ func (c *Chain) ProcessBlock(block *types.Block) (uint32, error) {
 	if block.Header.PrevBlock == c.tipHash {
 		// Validate transaction inputs BEFORE writing to disk to prevent
 		// disk pollution from blocks with valid PoW but invalid transactions.
-		if _, err := consensus.ValidateTransactionInputs(block, c.utxoSet, newHeight, c.params); err != nil {
+		// BIP113: use median-time-past of the parent chain for locktime enforcement.
+		mtp := consensus.CalcMedianTimePast(parentHeight, getAncestor)
+		if _, err := consensus.ValidateTransactionInputs(block, c.utxoSet, newHeight, c.params, mtp); err != nil {
 			metrics.Global.BlocksRejected.Add(1)
 			return 0, fmt.Errorf("validate tx inputs at height %d: %w", newHeight, err)
 		}
@@ -685,6 +693,17 @@ func (c *Chain) ProcessBlock(block *types.Block) (uint32, error) {
 		}
 
 	} else if newWork.Cmp(c.tipWork) > 0 {
+		if logging.DebugMode {
+			logging.L.Debug("[dbg] chain.ProcessBlock → REORG triggered",
+				"hash", blockHash.ReverseString()[:16],
+				"new_height", newHeight,
+				"new_work", newWork.Text(16),
+				"old_tip", c.tipHash.ReverseString()[:16],
+				"old_height", c.tipHeight,
+				"old_work", c.tipWork.Text(16))
+		}
+		// Write the block to disk BEFORE reorg so the reorg function can
+		// load it from the store. If the reorg fails, we clean up.
 		fileNum, offset, size, err := c.store.WriteBlock(blockHash, block)
 		if err != nil {
 			return 0, fmt.Errorf("store block: %w", err)
@@ -702,15 +721,6 @@ func (c *Chain) ProcessBlock(block *types.Block) (uint32, error) {
 		if err := c.store.PutBlockIndex(blockHash, rec); err != nil {
 			return 0, fmt.Errorf("store block index: %w", err)
 		}
-		if logging.DebugMode {
-			logging.L.Debug("[dbg] chain.ProcessBlock → REORG triggered",
-				"hash", blockHash.ReverseString()[:16],
-				"new_height", newHeight,
-				"new_work", newWork.Text(16),
-				"old_tip", c.tipHash.ReverseString()[:16],
-				"old_height", c.tipHeight,
-				"old_work", c.tipWork.Text(16))
-		}
 		if err := c.reorg(blockHash, newHeight, newWork); err != nil {
 			if errors.Is(err, ErrReorgTooDeep) {
 				c.heightByHash[blockHash] = newHeight
@@ -719,14 +729,15 @@ func (c *Chain) ProcessBlock(block *types.Block) (uint32, error) {
 				c.processOrphans(blockHash)
 				return newHeight, fmt.Errorf("%w: %s", ErrSideChain, err)
 			}
-			// Reorg failed validation — remove the block index entry so
-			// HasBlock won't report this block as known, allowing peers
-			// to re-deliver it if conditions change (TASK-03).
 			_ = c.store.DeleteBlockIndex(blockHash)
 			return 0, fmt.Errorf("reorg to %s: %w", blockHash, err)
 		}
 		metrics.Global.BlocksAccepted.Add(1)
 	} else {
+		// Side-chain block: insufficient work to trigger a reorg.
+		// PoW and block structure are already validated above. Full tx
+		// input validation is deferred to the reorg trial if this side
+		// chain ever accumulates enough work to become the main chain.
 		fileNum, offset, size, err := c.store.WriteBlock(blockHash, block)
 		if err != nil {
 			return 0, fmt.Errorf("store block: %w", err)
@@ -1023,7 +1034,9 @@ func (c *Chain) reorg(newTipHash types.Hash, newTipHeight uint32, newWork *big.I
 		if err != nil {
 			return fmt.Errorf("load new chain block %s for trial: %w", blockHash, err)
 		}
-		if _, err := consensus.ValidateTransactionInputs(block, trialSet, h, c.params); err != nil {
+		trialGetAncestor := c.buildAncestorLookup(block.Header.PrevBlock, h-1)
+		trialMTP := consensus.CalcMedianTimePast(h-1, trialGetAncestor)
+		if _, err := consensus.ValidateTransactionInputs(block, trialSet, h, c.params, trialMTP); err != nil {
 			if logging.DebugMode {
 				logging.L.Debug("[dbg] reorg phase-1: trial tx validation FAILED — aborting reorg, no state changed",
 					"height", h, "hash", blockHash.ReverseString()[:16], "error", err)
@@ -1358,7 +1371,8 @@ func (c *Chain) processOrphans(parentHash types.Hash) {
 			}
 
 			if orphan.Header.PrevBlock == c.tipHash {
-				if _, err := consensus.ValidateTransactionInputs(orphan, c.utxoSet, newHeight, c.params); err != nil {
+				orphanMTP := consensus.CalcMedianTimePast(parentHeight, getAncestor)
+				if _, err := consensus.ValidateTransactionInputs(orphan, c.utxoSet, newHeight, c.params, orphanMTP); err != nil {
 					logging.L.Debug("orphan failed tx input validation", "component", "chain", "hash", blockHash.ReverseString(), "error", err)
 					continue
 				}

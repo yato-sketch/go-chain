@@ -1,3 +1,9 @@
+// Copyright (c) 2024-2026 The Fairchain Contributors
+// Fairchain is an experiment in modularity, designed to improve on the work
+// of Satoshi Nakamoto and to inspire more creative genius in the space.
+// Distributed under the MIT software license, see the accompanying
+// file COPYING or http://www.opensource.org/licenses/mit-license.php.
+
 package script
 
 import (
@@ -212,40 +218,43 @@ func (e *engine) execute(script []byte) error {
 			pubKeyBytes := e.stack.pop()
 			sigBytes := e.stack.pop()
 
-			if len(sigBytes) < 2 {
+			// BIP146 NULLFAIL: an empty signature is allowed to produce
+			// false without failing the script. Any non-empty signature
+			// that does not pass verification must cause immediate failure.
+			if len(sigBytes) == 0 {
 				e.stack.push([]byte{})
 				continue
 			}
 
+			if len(sigBytes) < 2 {
+				return fmt.Errorf("OP_CHECKSIG: non-empty signature failed validation (NULLFAIL)")
+			}
+
 			hashType := sigBytes[len(sigBytes)-1]
 			if hashType != crypto.SigHashAll {
-				e.stack.push([]byte{})
-				continue
+				return fmt.Errorf("OP_CHECKSIG: unsupported hash type 0x%02x (NULLFAIL)", hashType)
 			}
 
 			derSig := sigBytes[:len(sigBytes)-1]
 			sig, err := ecdsa.ParseDERSignature(derSig)
 			if err != nil {
-				e.stack.push([]byte{})
-				continue
+				return fmt.Errorf("OP_CHECKSIG: invalid DER signature (NULLFAIL): %w", err)
 			}
 
 			pubKey, err := secp256k1.ParsePubKey(pubKeyBytes)
 			if err != nil {
-				e.stack.push([]byte{})
-				continue
+				return fmt.Errorf("OP_CHECKSIG: invalid public key (NULLFAIL): %w", err)
 			}
 
 			sigHash, err := crypto.ComputeSigHash(e.tx, e.inputIdx, e.pkScript)
 			if err != nil {
-				e.stack.push([]byte{})
-				continue
+				return fmt.Errorf("OP_CHECKSIG: sighash computation failed: %w", err)
 			}
 
 			if sig.Verify(sigHash[:], pubKey) {
 				e.stack.push([]byte{1})
 			} else {
-				e.stack.push([]byte{})
+				return fmt.Errorf("OP_CHECKSIG: signature verification failed (NULLFAIL)")
 			}
 
 		case op == OpReturn:

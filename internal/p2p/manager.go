@@ -1,3 +1,9 @@
+// Copyright (c) 2024-2026 The Fairchain Contributors
+// Fairchain is an experiment in modularity, designed to improve on the work
+// of Satoshi Nakamoto and to inspire more creative genius in the space.
+// Distributed under the MIT software license, see the accompanying
+// file COPYING or http://www.opensource.org/licenses/mit-license.php.
+
 package p2p
 
 import (
@@ -573,16 +579,19 @@ func (m *Manager) IsBanned(addr string) bool {
 }
 
 // addMisbehavior increases a peer's ban score and disconnects+bans if threshold reached.
-// In -connect mode the operator explicitly chose these peers, so banning or disconnecting
-// them would sever the only links the node has. This is intentional: -connect mode is used
-// for internal testing and chain diagnostics where the peer must remain connected even if
-// it sends invalid data (e.g. testing adversary scenarios, replaying bad blocks, etc.).
-// Log the misbehavior but keep the connection alive.
+// In -connect mode, ban suppression only applies to the explicitly configured -connect
+// peers. Discovered peers (connected via mesh formation) are subject to normal banning
+// to prevent an attacker from abusing the connect-only exemption.
 func (m *Manager) addMisbehavior(peer *Peer, score int32, reason string) {
 	if len(m.connectOnly) > 0 {
-		logging.L.Debug("peer misbehavior (connect-only, ban suppressed)", "component", "p2p",
-			"addr", peer.Addr(), "delta", score, "reason", reason)
-		return
+		peerAddr := peer.Addr()
+		for _, addr := range m.connectOnly {
+			if peerAddr == addr {
+				logging.L.Debug("peer misbehavior (connect-only peer, ban suppressed)", "component", "p2p",
+					"addr", peerAddr, "delta", score, "reason", reason)
+				return
+			}
+		}
 	}
 	newScore := peer.AddBanScore(score)
 	if newScore >= BanThreshold {
@@ -1092,18 +1101,22 @@ func (m *Manager) handlePeer(ctx context.Context, peer *Peer) {
 
 		// During IBD the sync peer legitimately floods us with blocks in
 		// response to getblocks; penalizing that traffic would ban the very
-		// peer we need. Only the active sync peer is exempt — all other peers
-		// remain rate-limited even during IBD to prevent abuse.
-		isSyncPeer := false
-		if m.IsSyncing() {
-			m.syncPeerAddrMu.RLock()
-			isSyncPeer = peer.Addr() == m.syncPeerAddr
-			m.syncPeerAddrMu.RUnlock()
-		}
-		if !peer.CheckRateLimit() && !isSyncPeer {
-			m.addMisbehavior(peer, 10, "message rate limit exceeded")
-			if peer.BanScore() >= BanThreshold {
-				return
+		// peer we need. Only block messages from the active sync peer are
+		// exempt — all other message types remain rate-limited to prevent
+		// an attacker from abusing the sync peer role to flood non-block
+		// messages without penalty.
+		if !peer.CheckRateLimit() {
+			isSyncPeerBlock := false
+			if m.IsSyncing() && hdr.CommandString() == protocol.CmdBlock {
+				m.syncPeerAddrMu.RLock()
+				isSyncPeerBlock = peer.Addr() == m.syncPeerAddr
+				m.syncPeerAddrMu.RUnlock()
+			}
+			if !isSyncPeerBlock {
+				m.addMisbehavior(peer, 10, "message rate limit exceeded")
+				if peer.BanScore() >= BanThreshold {
+					return
+				}
 			}
 		}
 
@@ -1295,6 +1308,13 @@ func (m *Manager) readAndProcessVersion(peer *Peer) error {
 
 	if theirVersion.Nonce == m.localNonce {
 		return fmt.Errorf("self-connection detected")
+	}
+
+	if theirVersion.Version < MinPeerProtoVersion {
+		return fmt.Errorf("peer protocol version %d below minimum %d", theirVersion.Version, MinPeerProtoVersion)
+	}
+	if theirVersion.StartHeight > MaxPeerStartHeight {
+		return fmt.Errorf("peer start height %d exceeds sanity limit %d", theirVersion.StartHeight, MaxPeerStartHeight)
 	}
 
 	peer.SetVersion(&theirVersion)
