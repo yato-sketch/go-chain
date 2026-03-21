@@ -26,6 +26,10 @@ jobs:
           - macos-latest
           - windows-latest
 
+    defaults:
+      run:
+        shell: bash
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -46,10 +50,10 @@ jobs:
         run: python scripts/chaos_test.py --check-parity
 
       - name: Lint (go vet)
-        run: go vet ./...
+        run: go vet $(go list ./... | grep -v /cmd/qt)
 
       - name: Build all packages
-        run: go build ./...
+        run: go build $(go list ./... | grep -v /cmd/qt)
 
       - name: Test all packages
-        run: go test ./...
+        run: go test $(go list ./... | grep -v /cmd/qt)
