@@ -24,11 +24,22 @@ void sha256mem_hash(const uint8_t *data, size_t len, uint8_t out[32]) {
     /* Phase 1: Seed. */
     sha256_once(ctx, md, data, len, mem[0]);
 
-    /* Phase 2: Fill. */
-    for (int i = 1; i < SHA256MEM_SLOTS; i++)
-        sha256_once(ctx, md, mem[i - 1], 32, mem[i]);
+    /* Phase 2: Fast fill — chain FILL_CHAINS SHA256s, copy across slots. */
+    {
+        int spread = SHA256MEM_SLOTS / SHA256MEM_FILL_CHAINS;
+        for (int j = 1; j < spread; j++)
+            memcpy(mem[j], mem[0], 32);
 
-    /* Phase 3: Mix. */
+        for (int i = 1; i < SHA256MEM_FILL_CHAINS; i++) {
+            int base = i * spread;
+            int prev = (i - 1) * spread;
+            sha256_once(ctx, md, mem[prev], 32, mem[base]);
+            for (int j = 1; j < spread; j++)
+                memcpy(mem[base + j], mem[base], 32);
+        }
+    }
+
+    /* Phase 3: SHA256-per-hop mix. */
     uint8_t acc[32];
     memcpy(acc, mem[SHA256MEM_SLOTS - 1], 32);
 
@@ -36,10 +47,6 @@ void sha256mem_hash(const uint8_t *data, size_t len, uint8_t out[32]) {
         uint32_t idx;
         memcpy(&idx, acc, 4);
         idx %= SHA256MEM_SLOTS;
-        for (int hop = 0; hop < SHA256MEM_CHASE_DEPTH; hop++) {
-            memcpy(&idx, mem[idx], 4);
-            idx %= SHA256MEM_SLOTS;
-        }
 
         uint8_t buf[64];
         memcpy(buf, acc, 32);

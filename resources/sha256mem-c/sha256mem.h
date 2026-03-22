@@ -4,9 +4,9 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define SHA256MEM_SLOTS       131072
-#define SHA256MEM_MIX_ROUNDS  128
-#define SHA256MEM_CHASE_DEPTH 8
+#define SHA256MEM_SLOTS       4194304
+#define SHA256MEM_FILL_CHAINS 8192
+#define SHA256MEM_MIX_ROUNDS  2048
 
 /*
  * sha256mem_hash computes the memory-hard SHA256 proof-of-work hash.
