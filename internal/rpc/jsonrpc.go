@@ -213,6 +213,27 @@ func (s *Server) dispatchJSONRPC(req jsonRPCRequest) jsonRPCResponse {
 	return resp
 }
 
+// DispatchRPC executes a JSON-RPC method by name with raw JSON params,
+// returning the result and error as generic values for in-process callers
+// (e.g. the QT wallet console).
+func (s *Server) DispatchRPC(method string, params []json.RawMessage) (interface{}, *jsonRPCError) {
+	handler, ok := s.methodMap[method]
+	if !ok {
+		return nil, newRPCError(rpcErrMethodNotFound, fmt.Sprintf("method %q not found", method))
+	}
+	return handler(params)
+}
+
+// ListMethods returns all registered JSON-RPC method names.
+func (s *Server) ListMethods() []string {
+	names := make([]string, 0, len(s.methodMap))
+	for name := range s.methodMap {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
 func writeJSONRPCError(w http.ResponseWriter, id json.RawMessage, code int, msg string) {
 	resp := jsonRPCResponse{
 		ID:    id,

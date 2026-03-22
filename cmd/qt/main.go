@@ -14,10 +14,13 @@ import (
 	"github.com/bams-repo/fairchain/internal/coinparams"
 	"github.com/bams-repo/fairchain/internal/version"
 	"github.com/wailsapp/wails/v2"
+	"github.com/wailsapp/wails/v2/pkg/menu"
+	"github.com/wailsapp/wails/v2/pkg/menu/keys"
 	"github.com/wailsapp/wails/v2/pkg/options"
 	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
 	"github.com/wailsapp/wails/v2/pkg/options/linux"
 	"github.com/wailsapp/wails/v2/pkg/options/mac"
+	wailsRuntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 //go:embed all:frontend/dist
@@ -29,6 +32,44 @@ var appIconPNG []byte
 //go:embed assets/trayicon.png
 var trayIconPNG []byte
 
+func buildAppMenu(app *App) *menu.Menu {
+	appMenu := menu.NewMenu()
+
+	fileMenu := appMenu.AddSubmenu("File")
+	fileMenu.AddText("Quit", keys.CmdOrCtrl("q"), func(_ *menu.CallbackData) {
+		wailsRuntime.Quit(app.ctx)
+	})
+
+	walletMenu := appMenu.AddSubmenu("Wallet")
+	walletMenu.AddText("Encrypt Wallet...", nil, func(_ *menu.CallbackData) {
+		wailsRuntime.EventsEmit(app.ctx, "menu:encrypt-wallet")
+	})
+	walletMenu.AddText("Change Passphrase...", nil, func(_ *menu.CallbackData) {
+		wailsRuntime.EventsEmit(app.ctx, "menu:change-passphrase")
+	})
+	walletMenu.AddSeparator()
+	walletMenu.AddText("Sign Message...", nil, func(_ *menu.CallbackData) {
+		wailsRuntime.EventsEmit(app.ctx, "menu:sign-message")
+	})
+	walletMenu.AddText("Verify Message...", nil, func(_ *menu.CallbackData) {
+		wailsRuntime.EventsEmit(app.ctx, "menu:verify-message")
+	})
+
+	helpMenu := appMenu.AddSubmenu("Help")
+	helpMenu.AddText("About "+coinparams.Name+" Wallet", nil, func(_ *menu.CallbackData) {
+		_, _ = wailsRuntime.MessageDialog(app.ctx, wailsRuntime.MessageDialogOptions{
+			Type:    wailsRuntime.InfoDialog,
+			Title:   "About " + coinparams.Name + " Wallet",
+			Message: coinparams.Name + " Wallet v" + version.String() + "\n\n" + coinparams.CopyrightHolder + "\nDistributed under the MIT software license.",
+		})
+	})
+	helpMenu.AddText("Debug Window", keys.Key("f12"), func(_ *menu.CallbackData) {
+		wailsRuntime.EventsEmit(app.ctx, "menu:debug-window")
+	})
+
+	return appMenu
+}
+
 func main() {
 	app := NewApp()
 
@@ -39,6 +80,7 @@ func main() {
 		MinWidth:          900,
 		MinHeight:         600,
 		HideWindowOnClose: true,
+		Menu:              buildAppMenu(app),
 		AssetServer: &assetserver.Options{
 			Assets: assets,
 		},

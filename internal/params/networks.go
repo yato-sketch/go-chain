@@ -207,8 +207,10 @@ var Testnet = &ChainParams{
 	MempoolExpiry:     336 * time.Hour, // 2 weeks, matching Bitcoin Core DEFAULT_MEMPOOL_EXPIRE
 
 	SeedNodes: []string{
-		"45.32.196.26:19334",  // main_web
-		"207.148.9.169:19334", // mining_pool
+		"45.32.196.26:19334",   // main_web
+		"149.28.248.117:19334", // seednode_dallas
+		"78.141.227.33:19334",  // seednode_london
+		"45.63.16.42:19334",    // mynta_webserver
 	},
 
 	ActivationHeights: map[string]uint32{"locktime": 1},

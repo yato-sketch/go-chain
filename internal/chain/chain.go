@@ -276,6 +276,14 @@ func (c *Chain) loadUtxoSetFromChainstate() error {
 }
 
 // rebuildUtxoSet replays all blocks to reconstruct the UTXO set and persist it.
+// RescanUTXOSet rebuilds the UTXO set from stored blocks and persists it.
+func (c *Chain) RescanUTXOSet() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.utxoSet.Clear()
+	return c.rebuildUtxoSet()
+}
+
 func (c *Chain) rebuildUtxoSet() error {
 	for h := uint32(0); h <= c.tipHeight; h++ {
 		hash, ok := c.hashByHeight[h]

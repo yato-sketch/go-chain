@@ -8,6 +8,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -27,10 +28,11 @@ import (
 // App is the Go struct bound to the Wails frontend. All public methods are
 // callable from JavaScript via the generated bindings.
 type App struct {
-	ctx     context.Context
-	node    *node.Node
-	irc     *ircClient
-	trayEnd func()
+	ctx         context.Context
+	node        *node.Node
+	irc         *ircClient
+	trayEnd     func()
+	startupTime time.Time
 }
 
 func NewApp() *App {
@@ -39,6 +41,7 @@ func NewApp() *App {
 
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
+	a.startupTime = time.Now()
 
 	logging.Init("info", "text")
 
@@ -226,6 +229,146 @@ func (a *App) GetSyncStatus() (map[string]interface{}, error) {
 		"progress":       progress,
 		"lastBlockTime":  lastBlockTime,
 	}, nil
+}
+
+// GetDebugInfo returns comprehensive node information for the debug window.
+func (a *App) GetDebugInfo() (map[string]interface{}, error) {
+	if a.node == nil {
+		return nil, fmt.Errorf("node not initialized")
+	}
+	bc := a.node.Chain()
+	p2p := a.node.P2PMgr()
+	mp := a.node.Mempool()
+	cfg := a.node.Config()
+	tipHash, tipHeight := bc.Tip()
+	inbound, outbound := p2p.ConnectionCounts()
+
+	var lastBlockTime string
+	if h, err := bc.TipHeader(); err == nil {
+		lastBlockTime = time.Unix(int64(h.Timestamp), 0).Format("Mon Jan 02 15:04:05 2006")
+	}
+
+	return map[string]interface{}{
+		"clientVersion": version.String(),
+		"userAgent":     version.UserAgent(),
+		"datadir":       cfg.NetworkDataDir(),
+		"startupTime":   a.startupTime.Format("Mon Jan 02 15:04:05 2006"),
+		"network":       cfg.Network,
+		"connections":   p2p.PeerCount(),
+		"inbound":       inbound,
+		"outbound":      outbound,
+		"blocks":        tipHeight,
+		"bestHash":      tipHash.ReverseString(),
+		"lastBlockTime": lastBlockTime,
+		"mempoolTx":     mp.Count(),
+		"mempoolBytes":  mp.TotalSize(),
+	}, nil
+}
+
+// GetPeerList returns detailed info about all connected peers.
+func (a *App) GetPeerList() ([]map[string]interface{}, error) {
+	if a.node == nil {
+		return nil, fmt.Errorf("node not initialized")
+	}
+	infos := a.node.P2PMgr().PeerInfos()
+	result := make([]map[string]interface{}, len(infos))
+	for i, p := range infos {
+		result[i] = map[string]interface{}{
+			"addr":      p.Addr,
+			"addrLocal": p.AddrLocal,
+			"subver":    p.SubVer,
+			"version":   p.Version,
+			"inbound":   p.Inbound,
+			"connTime":  p.ConnTime,
+			"lastSend":  p.LastSend,
+			"lastRecv":  p.LastRecv,
+			"bytesSent": p.BytesSent,
+			"bytesRecv": p.BytesRecv,
+			"pingTime":  p.PingTime,
+			"startingHeight": p.StartingHeight,
+			"banScore":  p.BanScore,
+		}
+	}
+	return result, nil
+}
+
+// ExecuteRPC runs a JSON-RPC command from the debug console.
+// Accepts a method name and a JSON-encoded array of params.
+func (a *App) ExecuteRPC(method string, paramsJSON string) (map[string]interface{}, error) {
+	if a.node == nil {
+		return nil, fmt.Errorf("node not initialized")
+	}
+	rpcSrv := a.node.RPCServer()
+	if rpcSrv == nil {
+		return nil, fmt.Errorf("RPC server not running")
+	}
+
+	var params []json.RawMessage
+	if paramsJSON != "" && paramsJSON != "[]" {
+		if err := json.Unmarshal([]byte(paramsJSON), &params); err != nil {
+			return map[string]interface{}{
+				"error": fmt.Sprintf("invalid params: %v", err),
+			}, nil
+		}
+	}
+
+	result, rpcErr := rpcSrv.DispatchRPC(method, params)
+	if rpcErr != nil {
+		return map[string]interface{}{
+			"error": rpcErr.Message,
+		}, nil
+	}
+
+	jsonBytes, err := json.MarshalIndent(result, "", "  ")
+	if err != nil {
+		return map[string]interface{}{
+			"error": fmt.Sprintf("marshal result: %v", err),
+		}, nil
+	}
+	return map[string]interface{}{
+		"result": string(jsonBytes),
+	}, nil
+}
+
+// ListRPCMethods returns all available JSON-RPC method names.
+func (a *App) ListRPCMethods() ([]string, error) {
+	if a.node == nil {
+		return nil, fmt.Errorf("node not initialized")
+	}
+	rpcSrv := a.node.RPCServer()
+	if rpcSrv == nil {
+		return nil, fmt.Errorf("RPC server not running")
+	}
+	return rpcSrv.ListMethods(), nil
+}
+
+// GetNetworkTotals returns cumulative bytes sent/received across all peers.
+func (a *App) GetNetworkTotals() (map[string]interface{}, error) {
+	if a.node == nil {
+		return nil, fmt.Errorf("node not initialized")
+	}
+	infos := a.node.P2PMgr().PeerInfos()
+	var totalSent, totalRecv int64
+	for _, p := range infos {
+		totalSent += p.BytesSent
+		totalRecv += p.BytesRecv
+	}
+	return map[string]interface{}{
+		"totalBytesSent": totalSent,
+		"totalBytesRecv": totalRecv,
+		"peers":          len(infos),
+	}, nil
+}
+
+// RescanBlockchain triggers a UTXO set rebuild from the stored blocks.
+func (a *App) RescanBlockchain() (string, error) {
+	if a.node == nil {
+		return "", fmt.Errorf("node not initialized")
+	}
+	if err := a.node.Chain().RescanUTXOSet(); err != nil {
+		return "", fmt.Errorf("rescan failed: %w", err)
+	}
+	return "Rescan complete", nil
 }
 
 // SetMining toggles the built-in miner at runtime.

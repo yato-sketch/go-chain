@@ -3,9 +3,11 @@ import { CoinInfo, CoinInfoContext } from "./hooks/useCoinInfo";
 import { Sidebar } from "./components/Sidebar";
 import { Header } from "./components/Header";
 import { SyncOverlay } from "./components/SyncOverlay";
+import { DebugWindow } from "./components/DebugWindow";
 import { Overview } from "./pages/Overview";
 import { Social } from "./pages/Social";
 import { CoinInfo as GetCoinInfo, GetSyncStatus } from "../wailsjs/go/main/App";
+import { EventsOn } from "../wailsjs/runtime/runtime";
 
 type Page = "overview" | "social" | "send" | "receive" | "transactions" | "network" | "mining" | "console";
 
@@ -16,6 +18,7 @@ function App() {
   const [syncing, setSyncing] = useState(true);
   const [syncDismissed, setSyncDismissed] = useState(false);
   const wasSynced = useRef(false);
+  const [showDebug, setShowDebug] = useState(false);
 
   useEffect(() => {
     GetCoinInfo().then((info) => setCoinInfo(info as unknown as CoinInfo));
@@ -44,6 +47,11 @@ function App() {
   }, []);
 
   const handleHide = useCallback(() => setSyncDismissed(true), []);
+
+  useEffect(() => {
+    const off = EventsOn("menu:debug-window", () => setShowDebug(true));
+    return off;
+  }, []);
 
   if (!coinInfo) {
     return (
@@ -89,6 +97,7 @@ function App() {
           </main>
         </div>
         {showSyncOverlay && <SyncOverlay onHide={handleHide} />}
+        {showDebug && <DebugWindow onClose={() => setShowDebug(false)} />}
       </div>
     </CoinInfoContext.Provider>
   );
