@@ -124,7 +124,7 @@ var Mainnet = &ChainParams{
 // Testnet is the public test network with easier difficulty.
 var Testnet = &ChainParams{
 	Name:         "testnet",
-	DataDirName:  "testnet2",
+	DataDirName:  "testnet3",
 	NetworkMagic: [4]byte{0xFA, 0x1C, 0xC0, 0x02},
 	DefaultPort:  19334,
 	AddressPrefix: 0x6F,
