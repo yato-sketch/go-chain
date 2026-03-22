@@ -1,12 +1,12 @@
 import { useEffect, useState } from "react";
-import { useCoinInfo } from "../hooks/useCoinInfo";
+import { useCoinInfo } from "@/hooks/useCoinInfo";
 import {
   GetBalance,
   GetWalletAddress,
   GetBlockchainInfo,
   GetPeerCount,
   GetSyncProgress,
-} from "../../wailsjs/go/main/App";
+} from "../../../wailsjs/go/main/App";
 
 function NetworkIcon({ peers }: { peers: number }) {
   const bars = peers >= 8 ? 4 : peers >= 4 ? 3 : peers >= 1 ? 2 : peers > 0 ? 1 : 0;

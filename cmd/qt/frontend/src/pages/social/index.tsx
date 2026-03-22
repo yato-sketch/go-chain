@@ -6,8 +6,8 @@ import {
   GetIRCStatus,
   GetIRCUsers,
   SendIRCMessage,
-} from "../../wailsjs/go/main/App";
-import { IRCMessage, IRCStatus } from "../lib/types";
+} from "../../../wailsjs/go/main/App";
+import { IRCMessage, IRCStatus } from "@/lib/types";
 
 function timeLabel(iso?: string): string {
   if (!iso) return "";
