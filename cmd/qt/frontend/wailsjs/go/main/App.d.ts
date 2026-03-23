@@ -21,6 +21,8 @@ export function GetIRCStatus():Promise<Record<string, any>>;
 
 export function GetIRCUsers():Promise<Array<string>>;
 
+export function GetMiningStatus():Promise<Record<string, any>>;
+
 export function GetNetworkTotals():Promise<Record<string, any>>;
 
 export function GetPeerCount():Promise<number>;
@@ -40,3 +42,5 @@ export function RescanBlockchain():Promise<string>;
 export function SendIRCMessage(arg1:string):Promise<void>;
 
 export function SetMining(arg1:boolean):Promise<void>;
+
+export function ToggleMining():Promise<Record<string, any>>;

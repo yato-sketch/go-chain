@@ -9,6 +9,7 @@ export interface CoinInfo {
   displayUnitName: string;
   version: string;
   copyright: string;
+  network: string;
 }
 
 export const CoinInfoContext = createContext<CoinInfo | null>(null);

@@ -23,6 +23,13 @@ import (
 	wailsRuntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
+// defaultNetwork is set at build time via -ldflags:
+//
+//	-X main.defaultNetwork=testnet
+//
+// Falls back to "testnet" when unset (e.g. during `wails dev`).
+var defaultNetwork string
+
 //go:embed all:frontend/dist
 var assets embed.FS
 
@@ -38,6 +45,11 @@ func buildAppMenu(app *App) *menu.Menu {
 	fileMenu := appMenu.AddSubmenu("File")
 	fileMenu.AddText("Quit", keys.CmdOrCtrl("q"), func(_ *menu.CallbackData) {
 		wailsRuntime.Quit(app.ctx)
+	})
+
+	miningMenu := appMenu.AddSubmenu("Mining")
+	miningMenu.AddText("Start Mining", keys.CmdOrCtrl("m"), func(_ *menu.CallbackData) {
+		wailsRuntime.EventsEmit(app.ctx, "menu:toggle-mining")
 	})
 
 	walletMenu := appMenu.AddSubmenu("Wallet")
@@ -70,11 +82,26 @@ func buildAppMenu(app *App) *menu.Menu {
 	return appMenu
 }
 
+func networkForBuild() string {
+	if defaultNetwork == "" {
+		return "testnet"
+	}
+	return defaultNetwork
+}
+
+func windowTitle() string {
+	net := networkForBuild()
+	if net == "mainnet" {
+		return coinparams.Name + " Wallet"
+	}
+	return coinparams.Name + " Wallet [" + net + "]"
+}
+
 func main() {
 	app := NewApp()
 
 	if err := wails.Run(&options.App{
-		Title:             coinparams.Name + " Wallet",
+		Title:             windowTitle(),
 		Width:             1200,
 		Height:            800,
 		MinWidth:          900,
@@ -94,7 +121,7 @@ func main() {
 		},
 		Mac: &mac.Options{
 			About: &mac.AboutInfo{
-				Title:   coinparams.Name + " Wallet",
+				Title:   windowTitle(),
 				Message: "Version " + version.String(),
 				Icon:    appIconPNG,
 			},

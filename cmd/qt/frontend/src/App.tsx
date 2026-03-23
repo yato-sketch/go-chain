@@ -2,11 +2,12 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { CoinInfo, CoinInfoContext } from "./hooks/useCoinInfo";
 import { Sidebar } from "./components/Sidebar";
 import { Header } from "./components/Header";
+import { StatusBar } from "./components/StatusBar";
 import { SyncOverlay } from "./components/SyncOverlay";
 import { DebugWindow } from "./components/DebugWindow";
 import { Overview } from "./pages/Overview";
 import { Social } from "./pages/Social";
-import { CoinInfo as GetCoinInfo, GetSyncStatus } from "../wailsjs/go/main/App";
+import { CoinInfo as GetCoinInfo, GetSyncStatus, ToggleMining } from "../wailsjs/go/main/App";
 import { EventsOn } from "../wailsjs/runtime/runtime";
 
 type Page = "overview" | "social" | "send" | "receive" | "transactions" | "network" | "mining" | "console";
@@ -53,6 +54,13 @@ function App() {
     return off;
   }, []);
 
+  useEffect(() => {
+    const off = EventsOn("menu:toggle-mining", () => {
+      ToggleMining().catch(() => {});
+    });
+    return off;
+  }, []);
+
   if (!coinInfo) {
     return (
       <div className="flex h-full items-center justify-center" style={{ background: 'var(--color-btc-deep)' }}>
@@ -88,14 +96,17 @@ function App() {
 
   return (
     <CoinInfoContext.Provider value={coinInfo}>
-      <div className="relative flex h-full" style={{ background: 'var(--color-btc-deep)' }}>
-        <Sidebar currentPage={page} onNavigate={setPage} />
-        <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
-          <Header />
-          <main className="relative min-h-0 flex-1 overflow-auto p-5">
-            {renderPage()}
-          </main>
+      <div className="relative flex h-full flex-col" style={{ background: 'var(--color-btc-deep)' }}>
+        <div className="flex min-h-0 flex-1 overflow-hidden">
+          <Sidebar currentPage={page} onNavigate={setPage} />
+          <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+            <Header />
+            <main className="relative min-h-0 flex-1 overflow-auto p-5">
+              {renderPage()}
+            </main>
+          </div>
         </div>
+        <StatusBar />
         {showSyncOverlay && <SyncOverlay onHide={handleHide} />}
         {showDebug && <DebugWindow onClose={() => setShowDebug(false)} />}
       </div>

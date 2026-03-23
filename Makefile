@@ -47,7 +47,9 @@ WAILS_DEPENDS := depends/wails
 WAILS_DEPENDS_TAG := v2.11.0
 
 # --- Wails build flags ---
-WAILS_BUILD_FLAGS :=
+DEFAULT_NETWORK ?= testnet
+QT_LDFLAGS := -X main.defaultNetwork=$(DEFAULT_NETWORK)
+WAILS_BUILD_FLAGS := -ldflags "$(QT_LDFLAGS)"
 ifneq ($(WEBKIT_TAG),)
 WAILS_BUILD_FLAGS += -tags $(WEBKIT_TAG)
 endif

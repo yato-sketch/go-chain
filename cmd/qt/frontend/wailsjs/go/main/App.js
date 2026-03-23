@@ -42,6 +42,10 @@ export function GetIRCUsers() {
   return window['go']['main']['App']['GetIRCUsers']();
 }
 
+export function GetMiningStatus() {
+  return window['go']['main']['App']['GetMiningStatus']();
+}
+
 export function GetNetworkTotals() {
   return window['go']['main']['App']['GetNetworkTotals']();
 }
@@ -80,4 +84,8 @@ export function SendIRCMessage(arg1) {
 
 export function SetMining(arg1) {
   return window['go']['main']['App']['SetMining'](arg1);
+}
+
+export function ToggleMining() {
+  return window['go']['main']['App']['ToggleMining']();
 }

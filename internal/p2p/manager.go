@@ -2212,6 +2212,7 @@ func (m *Manager) handleSyncInitial() {
 	m.mu.RUnlock()
 
 	if bestHeight <= ourHeight {
+		m.transitionSyncState(SyncStateSynced)
 		return
 	}
 
@@ -2503,7 +2504,7 @@ func (m *Manager) handleSyncedTick() {
 	}
 
 	if m.chain.IsTipStale() {
-		logging.L.Warn("chain tip appears stale, requesting blocks from all peers",
+		logging.L.Debug("chain tip appears stale, requesting blocks from all peers",
 			"component", "p2p", "height", ourHeight)
 		m.mu.RLock()
 		allPeers := make([]*Peer, 0, len(m.peers))

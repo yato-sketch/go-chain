@@ -19,6 +19,7 @@ import (
 	"github.com/bams-repo/fairchain/internal/config"
 	"github.com/bams-repo/fairchain/internal/logging"
 	"github.com/bams-repo/fairchain/internal/node"
+	"github.com/bams-repo/fairchain/internal/params"
 	"github.com/bams-repo/fairchain/internal/types"
 	"github.com/bams-repo/fairchain/internal/utxo"
 	"github.com/bams-repo/fairchain/internal/version"
@@ -46,7 +47,12 @@ func (a *App) startup(ctx context.Context) {
 	logging.Init("info", "text")
 
 	cfg := config.DefaultConfig()
-	cfg.Network = "regtest"
+	cfg.Network = networkForBuild()
+
+	if netParams := params.NetworkByName(cfg.Network); netParams != nil {
+		cfg.ListenAddr = fmt.Sprintf("0.0.0.0:%d", netParams.DefaultPort)
+		cfg.RPCAddr = fmt.Sprintf("127.0.0.1:%d", netParams.DefaultPort+1)
+	}
 
 	opts := node.Options{
 		NoRPCAuth: true,
@@ -121,6 +127,7 @@ func (a *App) CoinInfo() map[string]interface{} {
 		"displayUnitName": coinparams.DisplayUnitName,
 		"version":         version.String(),
 		"copyright":       coinparams.CopyrightHolder,
+		"network":         networkForBuild(),
 	}
 }
 
@@ -378,6 +385,35 @@ func (a *App) SetMining(enabled bool) error {
 	}
 	a.node.SetMining(enabled)
 	return nil
+}
+
+// GetMiningStatus returns the current mining state and hashrate.
+func (a *App) GetMiningStatus() map[string]interface{} {
+	if a.node == nil {
+		return map[string]interface{}{
+			"mining":        false,
+			"hashrate":      0,
+			"hashrateReady": false,
+		}
+	}
+	return map[string]interface{}{
+		"mining":        a.node.IsMining(),
+		"hashrate":      a.node.GetHashrate(),
+		"hashrateReady": a.node.HashrateReady(),
+	}
+}
+
+// ToggleMining flips mining on/off and returns the new state.
+func (a *App) ToggleMining() (map[string]interface{}, error) {
+	if a.node == nil {
+		return nil, fmt.Errorf("node not initialized")
+	}
+	newState := !a.node.IsMining()
+	a.node.SetMining(newState)
+	return map[string]interface{}{
+		"mining":   a.node.IsMining(),
+		"hashrate": a.node.GetHashrate(),
+	}, nil
 }
 
 // ConnectIRC manually attempts to connect to the configured IRC network.
