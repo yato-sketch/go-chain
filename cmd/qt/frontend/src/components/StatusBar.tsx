@@ -29,7 +29,7 @@ function SignalBars({ peers }: { peers: number }) {
   );
 }
 
-export function StatusBar() {
+export function StatusBar({ handleSyncOverlay }: { handleSyncOverlay: () => void }) {
   const [mining, setMining] = useState<MiningStatus>({ mining: false, hashrate: 0, hashrateReady: false });
   const [height, setHeight] = useState(0);
   const [peers, setPeers] = useState(0);
@@ -92,6 +92,7 @@ export function StatusBar() {
         position: "relative",
         zIndex: 20,
       }}
+      onClick={handleSyncOverlay}
     >
       <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
