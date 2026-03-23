@@ -78,12 +78,16 @@ export function StatusBar() {
         display: "flex",
         alignItems: "center",
         justifyContent: "space-between",
+        boxSizing: "border-box",
+        minHeight: "var(--app-status-bar-height)",
         padding: "4px 16px",
         borderTop: "1px solid var(--color-btc-border)",
         background: "var(--color-btc-surface)",
         fontSize: 11,
         color: "var(--color-btc-text-dim)",
         flexShrink: 0,
+        position: "relative",
+        zIndex: 20,
       }}
     >
       <div style={{ display: "flex", alignItems: "center", gap: 16 }}>

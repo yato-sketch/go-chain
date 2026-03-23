@@ -49,8 +49,8 @@
 
 @layer base {
   :root {
-    /* Must match menubar row height in MainLayout (e.g. h-9) */
-    --app-menubar-height: 2.25rem;
+    /* Bottom strip; fixed sidebar stops above this so it does not cover StatusBar */
+    --app-status-bar-height: 32px;
   }
   * {
     box-sizing: border-box;
@@ -75,11 +75,11 @@
   position: relative;
   background: linear-gradient(180deg, var(--color-btc-surface) 0%, var(--color-btc-deep) 100%) !important;
 }
-/* Desktop: fixed sidebar starts below the menubar so chrome and nav don’t stack awkwardly */
+/* Desktop: fixed sidebar ends above app status bar (StatusBar is full-width below main + nav) */
 @media (min-width: 768px) {
   [data-slot="sidebar-wrapper"] [data-slot="sidebar-container"] {
-    top: var(--app-menubar-height);
-    bottom: 0;
+    top: 0;
+    bottom: var(--app-status-bar-height);
     height: auto !important;
   }
 }
