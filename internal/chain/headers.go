@@ -14,6 +14,7 @@ import (
 
 	"github.com/bams-repo/fairchain/internal/consensus"
 	"github.com/bams-repo/fairchain/internal/crypto"
+	"github.com/bams-repo/fairchain/internal/logging"
 	"github.com/bams-repo/fairchain/internal/params"
 	"github.com/bams-repo/fairchain/internal/types"
 )
@@ -112,6 +113,46 @@ func (idx *HeaderIndex) AddHeader(header *types.BlockHeader, nowUnix uint32) (*H
 	return idx.addHeaderLocked(header, nowUnix)
 }
 
+// InsertTrustedHeader adds a header that has already been validated and
+// persisted to the chain store. Skips PoW and consensus checks entirely.
+// Used to populate the header index at startup from the on-disk chain,
+// avoiding the expensive re-hashing of every block header.
+func (idx *HeaderIndex) InsertTrustedHeader(header *types.BlockHeader) error {
+	idx.mu.Lock()
+	defer idx.mu.Unlock()
+
+	headerHash := crypto.HashBlockHeader(header)
+	if _, exists := idx.byHash[headerHash]; exists {
+		return nil
+	}
+
+	parentNode, ok := idx.byHash[header.PrevBlock]
+	if !ok {
+		return ErrOrphanHeader
+	}
+
+	childHeight := parentNode.Height + 1
+	blockWork := crypto.CalcWork(header.Bits)
+	cumulativeWork := new(big.Int).Add(parentNode.Work, blockWork)
+
+	hdr := *header
+	node := &HeaderNode{
+		Hash:   headerHash,
+		Height: childHeight,
+		Header: hdr,
+		Work:   cumulativeWork,
+		Parent: parentNode,
+	}
+	idx.byHash[headerHash] = node
+
+	if cumulativeWork.Cmp(idx.bestHeader.Work) > 0 {
+		idx.bestHeader = node
+		idx.rebuildHeightIndex()
+	}
+
+	return nil
+}
+
 func (idx *HeaderIndex) addHeaderLocked(header *types.BlockHeader, nowUnix uint32) (*HeaderNode, error) {
 	headerHash := crypto.HashBlockHeader(header)
 
@@ -131,6 +172,12 @@ func (idx *HeaderIndex) addHeaderLocked(header *types.BlockHeader, nowUnix uint3
 
 	parentNode, ok := idx.byHash[header.PrevBlock]
 	if !ok {
+		if logging.DebugMode {
+			logging.L.Debug("[dbg] headers.addHeaderLocked: orphan",
+				"hash", headerHash.ReverseString()[:16],
+				"prev", header.PrevBlock.ReverseString()[:16],
+				"index_size", len(idx.byHash))
+		}
 		return nil, ErrOrphanHeader
 	}
 
@@ -156,6 +203,14 @@ func (idx *HeaderIndex) addHeaderLocked(header *types.BlockHeader, nowUnix uint3
 		parentNode.Height,
 		idx.params,
 	); err != nil {
+		if logging.DebugMode {
+			logging.L.Debug("[dbg] headers.addHeaderLocked: validation failed",
+				"hash", headerHash.ReverseString()[:16],
+				"height", childHeight,
+				"bits", fmt.Sprintf("0x%08x", header.Bits),
+				"timestamp", header.Timestamp,
+				"error", err)
+		}
 		idx.addRejectedLocked(headerHash)
 		return nil, fmt.Errorf("header validation: %w", err)
 	}
@@ -252,15 +307,39 @@ func (idx *HeaderIndex) AddHeaders(headers []types.BlockHeader, nowUnix uint32) 
 	defer idx.mu.Unlock()
 
 	added := 0
+	dupes := 0
+	rejected := 0
 	for i := range headers {
 		_, err := idx.addHeaderLocked(&headers[i], nowUnix)
 		if err != nil {
-			if errors.Is(err, ErrDuplicateHeader) || errors.Is(err, ErrRejectedHeader) {
+			if errors.Is(err, ErrDuplicateHeader) {
+				dupes++
 				continue
+			}
+			if errors.Is(err, ErrRejectedHeader) {
+				rejected++
+				continue
+			}
+			if logging.DebugMode {
+				logging.L.Debug("[dbg] headers.AddHeaders: hard error",
+					"index", i,
+					"error", err,
+					"added_so_far", added,
+					"best_height", idx.bestHeader.Height)
 			}
 			return added, err
 		}
 		added++
+	}
+
+	if logging.DebugMode {
+		logging.L.Debug("[dbg] headers.AddHeaders complete",
+			"batch_size", len(headers),
+			"added", added,
+			"dupes", dupes,
+			"rejected", rejected,
+			"best_height", idx.bestHeader.Height,
+			"index_size", len(idx.byHash))
 	}
 	return added, nil
 }
@@ -352,12 +431,24 @@ func (idx *HeaderIndex) HeadersToFetch(startHeight uint32, limit int) []types.Ha
 
 	var result []types.Hash
 	bestH := idx.bestHeader.Height
+	nilCount := 0
 
 	for h := startHeight; h <= bestH && len(result) < limit; h++ {
 		node := idx.getHeaderByHeightLocked(h)
 		if node != nil {
 			result = append(result, node.Hash)
+		} else {
+			nilCount++
 		}
+	}
+
+	if logging.DebugMode {
+		logging.L.Debug("[dbg] headers.HeadersToFetch",
+			"start", startHeight,
+			"limit", limit,
+			"best_header", bestH,
+			"returned", len(result),
+			"nil_gaps", nilCount)
 	}
 
 	return result

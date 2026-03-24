@@ -34,9 +34,10 @@ type ChainParams struct {
 	MinTimestampRule    string        // "median-11" or "prev+1" — determines minimum allowed timestamp.
 
 	// Difficulty
-	InitialBits      uint32 // Compact target for the genesis block and initial difficulty.
-	MinBits          uint32 // Minimum difficulty (maximum target) allowed.
-	NoRetarget       bool   // If true, difficulty never changes (regtest mode).
+	InitialBits              uint32 // Compact target for the genesis block and initial difficulty.
+	MinBits                  uint32 // Minimum difficulty (maximum target) allowed.
+	NoRetarget               bool   // If true, difficulty never changes (regtest mode).
+	AllowMinDifficultyBlocks bool   // Bitcoin testnet rule: reset to MinBits if block gap > 2x spacing.
 
 	// Block limits
 	MaxBlockSize     uint32 // Maximum serialized block size in bytes.

@@ -137,7 +137,62 @@ func (bfm *BlockFileManager) WriteBlockNoSync(block *types.Block) (fileNum uint3
 	if err != nil {
 		return 0, 0, 0, fmt.Errorf("serialize block: %w", err)
 	}
+	return bfm.WriteBlockNoSyncRaw(data)
+}
 
+// WriteBlockRaw writes pre-serialized block bytes with fsync.
+func (bfm *BlockFileManager) WriteBlockRaw(data []byte) (fileNum uint32, offset uint32, size uint32, err error) {
+	bfm.mu.Lock()
+	defer bfm.mu.Unlock()
+
+	frameSize := int64(8 + len(data))
+	if bfm.curSize > 0 && bfm.curSize+frameSize > maxBlockFileSize {
+		bfm.curFile++
+		bfm.curSize = 0
+	}
+
+	fileNum = bfm.curFile
+	offset = uint32(bfm.curSize)
+	size = uint32(len(data))
+
+	path := bfm.blkPath(fileNum)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY, 0600)
+	if err != nil {
+		return 0, 0, 0, fmt.Errorf("open block file: %w", err)
+	}
+	defer f.Close()
+
+	preWritePos, err := f.Seek(0, io.SeekEnd)
+	if err != nil {
+		return 0, 0, 0, fmt.Errorf("seek to end of block file: %w", err)
+	}
+
+	record := make([]byte, 8+len(data))
+	copy(record[:4], bfm.magic[:])
+	binary.LittleEndian.PutUint32(record[4:8], uint32(len(data)))
+	copy(record[8:], data)
+
+	n, writeErr := f.Write(record)
+	if writeErr != nil || n != len(record) {
+		_ = f.Truncate(preWritePos)
+		_ = f.Sync()
+		if writeErr != nil {
+			return 0, 0, 0, fmt.Errorf("write block record: %w", writeErr)
+		}
+		return 0, 0, 0, fmt.Errorf("short write to block file: wrote %d of %d bytes", n, len(record))
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Truncate(preWritePos)
+		_ = f.Sync()
+		return 0, 0, 0, fmt.Errorf("sync block file: %w", err)
+	}
+
+	bfm.curSize += frameSize
+	return fileNum, offset, size, nil
+}
+
+// WriteBlockNoSyncRaw writes pre-serialized block bytes without fsync.
+func (bfm *BlockFileManager) WriteBlockNoSyncRaw(data []byte) (fileNum uint32, offset uint32, size uint32, err error) {
 	bfm.mu.Lock()
 	defer bfm.mu.Unlock()
 

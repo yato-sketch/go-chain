@@ -83,13 +83,13 @@ export function StatusBar({ handleSyncOverlay }: { handleSyncOverlay: () => void
     syncLabel = "Synced";
     isSynced = true;
   } else if (syncState === "HEADER_SYNC") {
-    syncLabel = "Syncing Headers...";
+    syncLabel = `Headers (${(syncProgress * 100).toFixed(1)}%)`;
     isSynced = false;
   } else if (syncState === "BLOCK_SYNC") {
-    syncLabel = `Syncing Blocks (${(syncProgress * 100).toFixed(1)}%)`;
+    syncLabel = `Blocks (${(syncProgress * 100).toFixed(1)}%)`;
     isSynced = false;
   } else {
-    syncLabel = peers > 0 ? "Connecting..." : "Connecting...";
+    syncLabel = peers > 0 ? "Preparing..." : "Connecting...";
     isSynced = false;
   }
 

@@ -21,6 +21,8 @@ type BlockStore interface {
 	HasBlock(hash types.Hash) (bool, error)
 	WriteBlock(hash types.Hash, block *types.Block) (fileNum, offset, size uint32, err error)
 	WriteBlockNoSync(hash types.Hash, block *types.Block) (fileNum, offset, size uint32, err error)
+	WriteBlockRaw(hash types.Hash, data []byte) (fileNum, offset, size uint32, err error)
+	WriteBlockNoSyncRaw(hash types.Hash, data []byte) (fileNum, offset, size uint32, err error)
 	ReadBlock(fileNum, offset, size uint32) (*types.Block, error)
 	WriteUndo(fileNum uint32, data []byte) (offset, size uint32, err error)
 	WriteUndoNoSync(fileNum uint32, data []byte) (offset, size uint32, err error)

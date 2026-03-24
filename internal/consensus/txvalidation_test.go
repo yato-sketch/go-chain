@@ -149,7 +149,7 @@ func TestValidateTransactionInputs_ScriptValidation_RejectsStealUTXO(t *testing.
 		Transactions: []types.Transaction{coinbase, stealTx},
 	}
 
-	_, err = ValidateTransactionInputs(block, utxoSet, height, p, 0)
+	_, err = ValidateTransactionInputs(block, utxoSet, height, p, 0, nil)
 	if err == nil {
 		t.Fatal("steal-utxo attack should be rejected by script validation in ValidateTransactionInputs")
 	}
@@ -211,7 +211,7 @@ func TestValidateTransactionInputs_ScriptValidation_AcceptsValidSig(t *testing.T
 		Transactions: []types.Transaction{coinbase, spendTx},
 	}
 
-	fees, err := ValidateTransactionInputs(block, utxoSet, height, p, 0)
+	fees, err := ValidateTransactionInputs(block, utxoSet, height, p, 0, nil)
 	if err != nil {
 		t.Fatalf("valid signed transaction should pass: %v", err)
 	}
@@ -264,7 +264,7 @@ func TestValidateTransactionInputs_ScriptValidation_RejectsBurnSpend(t *testing.
 		Transactions: []types.Transaction{coinbase, stealTx},
 	}
 
-	_, err := ValidateTransactionInputs(block, utxoSet, height, p, 0)
+	_, err := ValidateTransactionInputs(block, utxoSet, height, p, 0, nil)
 	if err == nil {
 		t.Fatal("steal-premine attack should be rejected by script validation")
 	}
@@ -312,7 +312,7 @@ func TestValidateTransactionInputs_LegacyScriptRejected(t *testing.T) {
 		Transactions: []types.Transaction{coinbase, spendTx},
 	}
 
-	_, err := ValidateTransactionInputs(block, utxoSet, height, p, 0)
+	_, err := ValidateTransactionInputs(block, utxoSet, height, p, 0, nil)
 	if err == nil {
 		t.Fatal("legacy {0x00} script should now be rejected by script validation")
 	}
@@ -431,7 +431,7 @@ func TestDoubleSpendWithinBlock(t *testing.T) {
 	signTxInput(t, &block.Transactions[1], 0, kp)
 	signTxInput(t, &block.Transactions[2], 0, kp)
 
-	_, err := ValidateTransactionInputs(block, s, 5, p, 0)
+	_, err := ValidateTransactionInputs(block, s, 5, p, 0, nil)
 	if err == nil {
 		t.Fatal("expected rejection for double-spend within block")
 	}
@@ -462,7 +462,7 @@ func TestDuplicateInputsWithinTransaction(t *testing.T) {
 	signTxInput(t, &block.Transactions[1], 0, kp)
 	signTxInput(t, &block.Transactions[1], 1, kp)
 
-	_, err := ValidateTransactionInputs(block, s, 5, p, 0)
+	_, err := ValidateTransactionInputs(block, s, 5, p, 0, nil)
 	if err == nil {
 		t.Fatal("expected rejection for duplicate inputs within a single transaction")
 	}
@@ -491,7 +491,7 @@ func TestOverspendTransaction(t *testing.T) {
 	}
 	signTxInput(t, &block.Transactions[1], 0, kp)
 
-	_, err := ValidateTransactionInputs(block, s, 5, p, 0)
+	_, err := ValidateTransactionInputs(block, s, 5, p, 0, nil)
 	if err == nil {
 		t.Fatal("expected rejection for overspend (output > input)")
 	}
@@ -522,7 +522,7 @@ func TestImmatureCoinbaseSpend(t *testing.T) {
 	}
 	signTxInput(t, &block.Transactions[1], 0, kp)
 
-	_, err := ValidateTransactionInputs(block, s, 8, p, 0)
+	_, err := ValidateTransactionInputs(block, s, 8, p, 0, nil)
 	if err == nil {
 		t.Fatal("expected rejection for immature coinbase spend (height 5, spending at height 8, maturity 10)")
 	}
@@ -553,7 +553,7 @@ func TestMatureCoinbaseSpendAccepted(t *testing.T) {
 	}
 	signTxInput(t, &block.Transactions[1], 0, kp)
 
-	_, err := ValidateTransactionInputs(block, s, 20, p, 0)
+	_, err := ValidateTransactionInputs(block, s, 20, p, 0, nil)
 	if err != nil {
 		t.Fatalf("expected mature coinbase spend to be accepted: %v", err)
 	}
@@ -571,7 +571,7 @@ func TestInvalidCoinbaseReward(t *testing.T) {
 		},
 	}
 
-	_, err := ValidateTransactionInputs(block, s, 5, p, 0)
+	_, err := ValidateTransactionInputs(block, s, 5, p, 0, nil)
 	if err == nil {
 		t.Fatal("expected rejection for coinbase reward exceeding subsidy (no fees)")
 	}
@@ -603,7 +603,7 @@ func TestCoinbaseRewardWithFees(t *testing.T) {
 	}
 	signTxInput(t, &block.Transactions[1], 0, kp)
 
-	_, err := ValidateTransactionInputs(block, s, 5, p, 0)
+	_, err := ValidateTransactionInputs(block, s, 5, p, 0, nil)
 	if err != nil {
 		t.Fatalf("expected valid block with coinbase = subsidy + fees: %v", err)
 	}
@@ -635,7 +635,7 @@ func TestCoinbaseExceedingSubsidyPlusFees(t *testing.T) {
 	}
 	signTxInput(t, &block.Transactions[1], 0, kp)
 
-	_, err := ValidateTransactionInputs(block, s, 5, p, 0)
+	_, err := ValidateTransactionInputs(block, s, 5, p, 0, nil)
 	if err == nil {
 		t.Fatal("expected rejection for coinbase exceeding subsidy + fees")
 	}
@@ -661,7 +661,7 @@ func TestNonexistentUTXOReference(t *testing.T) {
 		},
 	}
 
-	_, err := ValidateTransactionInputs(block, s, 5, p, 0)
+	_, err := ValidateTransactionInputs(block, s, 5, p, 0, nil)
 	if err == nil {
 		t.Fatal("expected rejection for reference to nonexistent UTXO")
 	}
@@ -704,7 +704,7 @@ func TestBlockWithConflictingTransactions(t *testing.T) {
 	signTxInput(t, &block.Transactions[1], 1, kp)
 	signTxInput(t, &block.Transactions[2], 0, kp)
 
-	_, err := ValidateTransactionInputs(block, s, 5, p, 0)
+	_, err := ValidateTransactionInputs(block, s, 5, p, 0, nil)
 	if err == nil {
 		t.Fatal("expected rejection for conflicting transactions (tx2 spends same UTXO as tx1)")
 	}
@@ -735,7 +735,7 @@ func TestZeroValueOutputRejected(t *testing.T) {
 	}
 	signTxInput(t, &block.Transactions[1], 0, kp)
 
-	_, err := ValidateTransactionInputs(block, s, 5, p, 0)
+	_, err := ValidateTransactionInputs(block, s, 5, p, 0, nil)
 	if err == nil {
 		t.Fatal("expected rejection for zero-value output")
 	}
@@ -761,7 +761,7 @@ func TestZeroValueCoinbaseOutputRejected(t *testing.T) {
 		},
 	}
 
-	_, err := ValidateTransactionInputs(block, s, 5, p, 0)
+	_, err := ValidateTransactionInputs(block, s, 5, p, 0, nil)
 	if err == nil {
 		t.Fatal("expected rejection for zero-value coinbase output")
 	}
@@ -782,7 +782,7 @@ func TestNoInputsNonCoinbaseRejected(t *testing.T) {
 		},
 	}
 
-	_, err := ValidateTransactionInputs(block, s, 5, p, 0)
+	_, err := ValidateTransactionInputs(block, s, 5, p, 0, nil)
 	if err == nil {
 		t.Fatal("expected rejection for non-coinbase tx with no inputs")
 	}
@@ -811,7 +811,7 @@ func TestNoOutputsNonCoinbaseRejected(t *testing.T) {
 	}
 	signTxInput(t, &block.Transactions[1], 0, kp)
 
-	_, err := ValidateTransactionInputs(block, s, 5, p, 0)
+	_, err := ValidateTransactionInputs(block, s, 5, p, 0, nil)
 	if err == nil {
 		t.Fatal("expected rejection for non-coinbase tx with no outputs")
 	}
@@ -846,7 +846,7 @@ func TestValidBlockAccepted(t *testing.T) {
 	}
 	signTxInput(t, &block.Transactions[1], 0, kp)
 
-	fees, err := ValidateTransactionInputs(block, s, 5, p, 0)
+	fees, err := ValidateTransactionInputs(block, s, 5, p, 0, nil)
 	if err != nil {
 		t.Fatalf("expected valid block to be accepted: %v", err)
 	}
@@ -1153,7 +1153,7 @@ func TestLockTimeEnforced_InBlock_Gated(t *testing.T) {
 	}
 	signTxInput(t, &block.Transactions[1], 0, kp)
 
-	_, err := ValidateTransactionInputs(block, s, height, p, block.Header.Timestamp)
+	_, err := ValidateTransactionInputs(block, s, height, p, block.Header.Timestamp, nil)
 	if err == nil {
 		t.Fatal("expected rejection for unsatisfied locktime in block")
 	}
@@ -1188,7 +1188,7 @@ func TestLockTimeNotEnforced_BeforeActivation(t *testing.T) {
 	}
 	signTxInput(t, &block.Transactions[1], 0, kp)
 
-	_, err := ValidateTransactionInputs(block, s, height, p, block.Header.Timestamp)
+	_, err := ValidateTransactionInputs(block, s, height, p, block.Header.Timestamp, nil)
 	if err != nil {
 		t.Fatalf("locktime should not be enforced before activation: %v", err)
 	}
@@ -1222,7 +1222,7 @@ func TestSequenceLock_InBlock_Rejected(t *testing.T) {
 	}
 	signTxInput(t, &block.Transactions[1], 0, kp)
 
-	_, err := ValidateTransactionInputs(block, s, height, p, block.Header.Timestamp)
+	_, err := ValidateTransactionInputs(block, s, height, p, block.Header.Timestamp, nil)
 	if err == nil {
 		t.Fatal("expected rejection for unsatisfied relative locktime in block")
 	}
@@ -1256,7 +1256,7 @@ func TestSequenceLock_InBlock_Accepted(t *testing.T) {
 	}
 	signTxInput(t, &block.Transactions[1], 0, kp)
 
-	_, err := ValidateTransactionInputs(block, s, height, p, block.Header.Timestamp)
+	_, err := ValidateTransactionInputs(block, s, height, p, block.Header.Timestamp, nil)
 	if err != nil {
 		t.Fatalf("sequence lock should be satisfied at height 65: %v", err)
 	}

@@ -226,7 +226,9 @@ func (s *Set) TotalValue() uint64 {
 // ConnectBlock applies a block's transactions to the UTXO set atomically.
 // All changes are computed first; the UTXO set is only mutated if every
 // transaction validates successfully. Returns undo data for disconnect.
-func (s *Set) ConnectBlock(block *types.Block, height uint32) (*BlockUndoData, error) {
+// txHashes is an optional slice of pre-computed transaction hashes; pass nil
+// to compute them on the fly.
+func (s *Set) ConnectBlock(block *types.Block, height uint32, txHashes []types.Hash) (*BlockUndoData, error) {
 	undo := &BlockUndoData{}
 
 	// Collect all mutations before applying any of them.
@@ -245,9 +247,15 @@ func (s *Set) ConnectBlock(block *types.Block, height uint32) (*BlockUndoData, e
 
 	for txIdx := range block.Transactions {
 		tx := &block.Transactions[txIdx]
-		txHash, err := crypto.HashTransaction(tx)
-		if err != nil {
-			return nil, fmt.Errorf("hash tx %d: %w", txIdx, err)
+		var txHash types.Hash
+		if txHashes != nil {
+			txHash = txHashes[txIdx]
+		} else {
+			var err error
+			txHash, err = crypto.HashTransaction(tx)
+			if err != nil {
+				return nil, fmt.Errorf("hash tx %d: %w", txIdx, err)
+			}
 		}
 
 		if !tx.IsCoinbase() {

@@ -49,7 +49,7 @@ func TestValidateBlockStructure(t *testing.T) {
 	p := params.Regtest
 	block := makeTestBlock(1, p)
 
-	if err := ValidateBlockStructure(&block, 1, p); err != nil {
+	if err := ValidateBlockStructure(&block, 1, p, nil, nil); err != nil {
 		t.Fatalf("valid block rejected: %v", err)
 	}
 }
@@ -69,7 +69,7 @@ func TestValidateBlockStructureNoCoinbase(t *testing.T) {
 		},
 	}
 
-	if err := ValidateBlockStructure(&block, 1, p); err == nil {
+	if err := ValidateBlockStructure(&block, 1, p, nil, nil); err == nil {
 		t.Fatal("should reject block without coinbase")
 	}
 }
@@ -86,7 +86,7 @@ func TestValidateBlockStructureExcessiveSubsidy(t *testing.T) {
 	merkle, _ := crypto.ComputeMerkleRoot(block.Transactions)
 	block.Header.MerkleRoot = merkle
 
-	if err := ValidateBlockStructure(&block, 1, p); err != nil {
+	if err := ValidateBlockStructure(&block, 1, p, nil, nil); err != nil {
 		t.Fatalf("structural validation should pass (coinbase cap enforced in tx validation): %v", err)
 	}
 }
@@ -96,7 +96,7 @@ func TestValidateBlockStructureBadMerkle(t *testing.T) {
 	block := makeTestBlock(1, p)
 	block.Header.MerkleRoot = types.Hash{0xFF}
 
-	if err := ValidateBlockStructure(&block, 1, p); err == nil {
+	if err := ValidateBlockStructure(&block, 1, p, nil, nil); err == nil {
 		t.Fatal("should reject block with bad merkle root")
 	}
 }
@@ -109,7 +109,7 @@ func TestValidateBlockStructureDuplicateTx(t *testing.T) {
 	merkle, _ := crypto.ComputeMerkleRoot(block.Transactions)
 	block.Header.MerkleRoot = merkle
 
-	if err := ValidateBlockStructure(&block, 1, p); err == nil {
+	if err := ValidateBlockStructure(&block, 1, p, nil, nil); err == nil {
 		t.Fatal("should reject block with duplicate txids")
 	}
 }
@@ -121,7 +121,7 @@ func TestValidateBlockStructureEmpty(t *testing.T) {
 		Transactions: nil,
 	}
 
-	if err := ValidateBlockStructure(&block, 0, p); err == nil {
+	if err := ValidateBlockStructure(&block, 0, p, nil, nil); err == nil {
 		t.Fatal("should reject empty block")
 	}
 }

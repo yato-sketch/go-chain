@@ -182,9 +182,10 @@ var Testnet = &ChainParams{
 
 	// Difficulty calibrated for sha256mem v3 (~27 H/s per core).
 	// 0x1f3a910b ≈ 570 hashes ≈ ~21 sec on a single core.
-	InitialBits:      0x1f3a910b,
-	MinBits:          0x207fffff, // Floor: trivial difficulty (same as regtest)
-	NoRetarget:       false,
+	InitialBits:              0x1f3a910b,
+	MinBits:                  0x207fffff, // Floor: trivial difficulty (same as regtest)
+	NoRetarget:               false,
+	AllowMinDifficultyBlocks: true,
 
 	MaxBlockSize:     2_000_000,
 	MaxBlockTxCount:  10_000,
@@ -213,7 +214,10 @@ var Testnet = &ChainParams{
 		"45.63.16.42:19334",    // mynta_webserver
 	},
 
-	ActivationHeights: map[string]uint32{"locktime": 1},
+	ActivationHeights: map[string]uint32{
+		"locktime":      1,
+		"mindiffblocks": 15_000,
+	},
 }
 
 // Regtest is a local regression-test network with trivial difficulty and no retarget.

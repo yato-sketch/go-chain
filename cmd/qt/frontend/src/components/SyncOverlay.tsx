@@ -4,6 +4,7 @@ import { GetSyncStatus } from "../../wailsjs/go/main/App";
 
 interface SyncStatus {
   syncState: string;
+  stageLabel: string;
   headerHeight: number;
   blockHeight: number;
   bestPeerHeight: number;
@@ -38,6 +39,94 @@ function formatEta(secondsLeft: number): string {
   return `${h}h ${m}m`;
 }
 
+function StageIndicator({ syncState }: { syncState: string }) {
+  const stages = [
+    { key: "INITIAL", label: "Connect" },
+    { key: "HEADER_SYNC", label: "Headers" },
+    { key: "BLOCK_SYNC", label: "Blocks" },
+    { key: "SYNCED", label: "Synced" },
+  ];
+
+  const currentIdx = stages.findIndex((s) => s.key === syncState);
+
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 0, width: "100%", maxWidth: 400, margin: "0 auto" }}>
+      {stages.map((stage, i) => {
+        const isActive = i === currentIdx;
+        const isDone = i < currentIdx;
+        const color = isDone
+          ? "var(--color-btc-green)"
+          : isActive
+            ? "var(--color-btc-gold)"
+            : "var(--color-btc-text-dim)";
+
+        return (
+          <div key={stage.key} style={{ display: "flex", alignItems: "center", flex: 1 }}>
+            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", minWidth: 48 }}>
+              <div
+                style={{
+                  width: 24,
+                  height: 24,
+                  borderRadius: "50%",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  fontSize: 11,
+                  fontWeight: 700,
+                  border: `2px solid ${color}`,
+                  background: isDone ? color : "transparent",
+                  color: isDone ? "var(--color-btc-deep)" : color,
+                  transition: "all 0.3s ease",
+                }}
+              >
+                {isDone ? (
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+                    <polyline points="20 6 9 17 4 12" />
+                  </svg>
+                ) : isActive ? (
+                  <div
+                    style={{
+                      width: 8,
+                      height: 8,
+                      borderRadius: "50%",
+                      background: color,
+                      animation: "pulse-glow 1.5s ease-in-out infinite",
+                    }}
+                  />
+                ) : (
+                  i + 1
+                )}
+              </div>
+              <span
+                style={{
+                  fontSize: 10,
+                  fontWeight: isActive ? 700 : 500,
+                  color,
+                  marginTop: 4,
+                  letterSpacing: "0.02em",
+                }}
+              >
+                {stage.label}
+              </span>
+            </div>
+            {i < stages.length - 1 && (
+              <div
+                style={{
+                  flex: 1,
+                  height: 2,
+                  background: isDone ? "var(--color-btc-green)" : "var(--color-btc-border)",
+                  marginBottom: 18,
+                  transition: "background 0.3s ease",
+                }}
+              />
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 export function SyncOverlay({ onHide }: { onHide: () => void }) {
   const coinInfo = useCoinInfo();
   const [status, setStatus] = useState<SyncStatus | null>(null);
@@ -57,7 +146,6 @@ export function SyncOverlay({ onHide }: { onHide: () => void }) {
           const hist = progressHistory.current;
           hist.push({ time: now, progress: st.progress });
 
-          // Keep only the last 60 seconds of samples for rate calculation.
           const cutoff = now - 60_000;
           while (hist.length > 1 && hist[0].time < cutoff) {
             hist.shift();
@@ -88,14 +176,7 @@ export function SyncOverlay({ onHide }: { onHide: () => void }) {
     return () => clearInterval(id);
   }, []);
 
-  const blocksLeft = status
-    ? status.bestPeerHeight > status.blockHeight
-      ? status.bestPeerHeight - status.blockHeight
-      : 0
-    : 0;
-
-  const isHeaderSync = status?.syncState === "HEADER_SYNC";
-  const progressPct = status ? (status.progress * 100).toFixed(2) : "0.00";
+  const progressPct = status ? (status.progress * 100).toFixed(1) : "0.0";
 
   return (
     <div
@@ -145,7 +226,7 @@ export function SyncOverlay({ onHide }: { onHide: () => void }) {
         </div>
       </div>
 
-      {/* Sync detail table */}
+      {/* Sync detail */}
       <div
         style={{
           flex: 1,
@@ -156,51 +237,114 @@ export function SyncOverlay({ onHide }: { onHide: () => void }) {
         }}
       >
         <div style={{ width: "100%", maxWidth: 520 }}>
+          {/* Stage indicator */}
+          <div style={{ marginBottom: 28 }}>
+            <StageIndicator syncState={status?.syncState ?? "INITIAL"} />
+          </div>
+
+          {/* Current stage label */}
+          <div
+            style={{
+              textAlign: "center",
+              marginBottom: 20,
+              fontSize: 14,
+              fontWeight: 600,
+              color: "var(--color-btc-gold)",
+              minHeight: 20,
+            }}
+          >
+            {status?.stageLabel ?? "Initializing..."}
+          </div>
+
+          {/* Progress bar */}
+          <div style={{ marginBottom: 24 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
+              <span style={{ fontSize: 12, fontWeight: 600, color: "var(--color-btc-text)" }}>
+                Overall Progress
+              </span>
+              <span style={{ fontSize: 12, fontWeight: 700, color: "var(--color-btc-gold)", fontFamily: "monospace" }}>
+                {progressPct}%
+              </span>
+            </div>
+            <div
+              style={{
+                height: 18,
+                borderRadius: 4,
+                background: "var(--color-btc-surface)",
+                border: "1px solid var(--color-btc-border)",
+                overflow: "hidden",
+                position: "relative",
+              }}
+            >
+              <div
+                style={{
+                  height: "100%",
+                  width: `${Math.min(100, status?.progress ? status.progress * 100 : 0)}%`,
+                  background: "linear-gradient(90deg, var(--color-btc-gold), #e8a820)",
+                  borderRadius: 3,
+                  transition: "width 0.6s ease",
+                }}
+              />
+              {/* 50% marker showing header/block boundary */}
+              <div
+                style={{
+                  position: "absolute",
+                  left: "50%",
+                  top: 0,
+                  bottom: 0,
+                  width: 1,
+                  background: "rgba(255,255,255,0.15)",
+                }}
+              />
+            </div>
+            <div style={{ display: "flex", justifyContent: "space-between", marginTop: 4 }}>
+              <span style={{ fontSize: 10, color: "var(--color-btc-text-dim)" }}>Headers</span>
+              <span style={{ fontSize: 10, color: "var(--color-btc-text-dim)" }}>Blocks</span>
+            </div>
+          </div>
+
+          {/* Detail table */}
           <table style={{ width: "100%", borderCollapse: "collapse" }}>
             <tbody>
               <Row
-                label="Number of blocks left"
+                label="Sync stage"
                 value={
                   status == null
                     ? "Connecting..."
-                    : isHeaderSync
-                      ? `Unknown. Syncing Headers (${status.headerHeight.toLocaleString()})...`
-                      : blocksLeft > 0
-                        ? blocksLeft.toLocaleString()
-                        : "0"
+                    : status.syncState === "HEADER_SYNC"
+                      ? "Phase 1: Downloading & verifying headers"
+                      : status.syncState === "BLOCK_SYNC"
+                        ? "Phase 2: Downloading block data"
+                        : status.syncState === "SYNCED"
+                          ? "Complete"
+                          : "Waiting for peers..."
                 }
+              />
+              <Row
+                label="Headers"
+                value={
+                  status
+                    ? `${status.headerHeight.toLocaleString()}${status.bestPeerHeight > 0 ? ` / ${status.bestPeerHeight.toLocaleString()}` : ""}`
+                    : "..."
+                }
+              />
+              <Row
+                label="Blocks"
+                value={
+                  status
+                    ? status.syncState === "HEADER_SYNC"
+                      ? "Waiting for headers to complete..."
+                      : `${status.blockHeight.toLocaleString()}${status.headerHeight > 0 ? ` / ${status.headerHeight.toLocaleString()}` : ""}`
+                    : "..."
+                }
+              />
+              <Row
+                label="Connected peers"
+                value={status ? `${status.peers}` : "0"}
               />
               <Row
                 label="Last block time"
                 value={status ? formatBlockTime(status.lastBlockTime) : "Unknown"}
-              />
-              <Row
-                label="Progress"
-                value={
-                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                    <span>{progressPct}%</span>
-                    <div
-                      style={{
-                        flex: 1,
-                        height: 14,
-                        borderRadius: 3,
-                        background: "var(--color-btc-surface)",
-                        border: "1px solid var(--color-btc-border)",
-                        overflow: "hidden",
-                      }}
-                    >
-                      <div
-                        style={{
-                          height: "100%",
-                          width: `${Math.min(100, status?.progress ? status.progress * 100 : 0)}%`,
-                          background: "var(--color-btc-gold)",
-                          borderRadius: 2,
-                          transition: "width 0.6s ease",
-                        }}
-                      />
-                    </div>
-                  </div>
-                }
               />
               <Row
                 label="Progress increase per hour"
@@ -208,7 +352,7 @@ export function SyncOverlay({ onHide }: { onHide: () => void }) {
                   ratePerHour != null ? `${(ratePerHour * 100).toFixed(2)}%` : "calculating..."
                 }
               />
-              <Row label="Estimated time left until synced" value={eta} />
+              <Row label="Estimated time left" value={eta} />
             </tbody>
           </table>
         </div>
@@ -253,7 +397,7 @@ function Row({ label, value }: { label: string; value: React.ReactNode }) {
     <tr>
       <td
         style={{
-          padding: "10px 16px 10px 0",
+          padding: "8px 16px 8px 0",
           fontSize: 13,
           fontWeight: 600,
           color: "var(--color-btc-text)",
@@ -265,7 +409,7 @@ function Row({ label, value }: { label: string; value: React.ReactNode }) {
       </td>
       <td
         style={{
-          padding: "10px 0",
+          padding: "8px 0",
           fontSize: 13,
           color: "var(--color-btc-text-muted)",
           width: "60%",

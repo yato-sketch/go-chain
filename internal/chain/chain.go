@@ -299,7 +299,7 @@ func (c *Chain) rebuildUtxoSet() error {
 				return fmt.Errorf("connect genesis UTXOs: %w", err)
 			}
 		} else {
-			if _, err := c.utxoSet.ConnectBlock(block, h); err != nil {
+			if _, err := c.utxoSet.ConnectBlock(block, h, nil); err != nil {
 				return fmt.Errorf("connect block %d UTXOs: %w", h, err)
 			}
 		}
@@ -388,12 +388,13 @@ func (c *Chain) TipHeader() (*types.BlockHeader, error) {
 
 // NewHeaderIndex creates a HeaderIndex seeded with the existing chain's headers
 // from genesis to the current tip. Used by the P2P layer for header-first sync.
+// Uses InsertTrustedHeader to skip PoW re-validation of already-persisted
+// headers, reducing startup from minutes to milliseconds.
 func (c *Chain) NewHeaderIndex() *HeaderIndex {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
 	idx := NewHeaderIndex(c.params, c.engine, &c.params.GenesisBlock.Header)
-	now := uint32(time.Now().Unix())
 	for h := uint32(1); h <= c.tipHeight; h++ {
 		hash, ok := c.hashByHeight[h]
 		if !ok {
@@ -403,7 +404,7 @@ func (c *Chain) NewHeaderIndex() *HeaderIndex {
 		if err != nil {
 			break
 		}
-		idx.AddHeader(header, now)
+		idx.InsertTrustedHeader(header)
 	}
 	return idx
 }
@@ -538,6 +539,18 @@ func (c *Chain) HasBlockOnChain(hash types.Hash) bool {
 }
 
 func (c *Chain) ProcessBlock(block *types.Block) (uint32, error) {
+	return c.processBlock(block, false)
+}
+
+// ProcessBlockTrustedHeader processes a block whose header has already been
+// validated by the header index during header-first sync. Skips the expensive
+// PoW and difficulty re-validation, but still validates block structure
+// (merkle root, tx format, size limits) and transaction inputs.
+func (c *Chain) ProcessBlockTrustedHeader(block *types.Block) (uint32, error) {
+	return c.processBlock(block, true)
+}
+
+func (c *Chain) processBlock(block *types.Block, trustedHeader bool) (uint32, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -602,9 +615,11 @@ func (c *Chain) ProcessBlock(block *types.Block) (uint32, error) {
 	// which produces wrong difficulty at retarget boundaries for side chains.
 	getAncestor := c.buildAncestorLookup(block.Header.PrevBlock, parentHeight)
 
-	nowUnix := uint32(c.timeSource.Now())
-	if err := consensus.FullValidateHeader(c.engine, &block.Header, parentHeader, newHeight, getAncestor, nowUnix, parentHeight, c.params); err != nil {
-		return 0, fmt.Errorf("validate header at height %d: %w", newHeight, err)
+	if !trustedHeader {
+		nowUnix := uint32(c.timeSource.Now())
+		if err := consensus.FullValidateHeader(c.engine, &block.Header, parentHeader, newHeight, getAncestor, nowUnix, parentHeight, c.params); err != nil {
+			return 0, fmt.Errorf("validate header at height %d: %w", newHeight, err)
+		}
 	}
 
 	if err := c.engine.ValidateBlock(block, newHeight, c.params); err != nil {
@@ -623,7 +638,7 @@ func (c *Chain) ProcessBlock(block *types.Block) (uint32, error) {
 		// disk pollution from blocks with valid PoW but invalid transactions.
 		// BIP113: use median-time-past of the parent chain for locktime enforcement.
 		mtp := consensus.CalcMedianTimePast(parentHeight, getAncestor)
-		if _, err := consensus.ValidateTransactionInputs(block, c.utxoSet, newHeight, c.params, mtp); err != nil {
+		if _, err := consensus.ValidateTransactionInputs(block, c.utxoSet, newHeight, c.params, mtp, nil); err != nil {
 			metrics.Global.BlocksRejected.Add(1)
 			return 0, fmt.Errorf("validate tx inputs at height %d: %w", newHeight, err)
 		}
@@ -651,7 +666,7 @@ func (c *Chain) ProcessBlock(block *types.Block) (uint32, error) {
 			ChainWork: newWork,
 		}
 
-		undoData, err := c.utxoSet.ConnectBlock(block, newHeight)
+		undoData, err := c.utxoSet.ConnectBlock(block, newHeight, nil)
 		if err != nil {
 			metrics.Global.BlocksRejected.Add(1)
 			return 0, fmt.Errorf("connect block UTXOs: %w", err)
@@ -1066,14 +1081,14 @@ func (c *Chain) reorg(newTipHash types.Hash, newTipHeight uint32, newWork *big.I
 		}
 		trialGetAncestor := c.buildAncestorLookup(block.Header.PrevBlock, h-1)
 		trialMTP := consensus.CalcMedianTimePast(h-1, trialGetAncestor)
-		if _, err := consensus.ValidateTransactionInputs(block, trialSet, h, c.params, trialMTP); err != nil {
+		if _, err := consensus.ValidateTransactionInputs(block, trialSet, h, c.params, trialMTP, nil); err != nil {
 			if logging.DebugMode {
 				logging.L.Debug("[dbg] reorg phase-1: trial tx validation FAILED — aborting reorg, no state changed",
 					"height", h, "hash", blockHash.ReverseString()[:16], "error", err)
 			}
 			return fmt.Errorf("trial validate tx inputs at height %d: %w", h, err)
 		}
-		undoData, err := trialSet.ConnectBlock(block, h)
+		undoData, err := trialSet.ConnectBlock(block, h, nil)
 		if err != nil {
 			if logging.DebugMode {
 				logging.L.Debug("[dbg] reorg phase-1: trial UTXO connect FAILED — aborting reorg, no state changed",
@@ -1169,7 +1184,7 @@ func (c *Chain) reorg(newTipHash types.Hash, newTipHeight uint32, newWork *big.I
 	connected := make([]reorgBlockEntry, 0, len(trialConnected))
 
 	for _, tr := range trialConnected {
-		liveUndo, err := c.utxoSet.ConnectBlock(tr.block, tr.height)
+		liveUndo, err := c.utxoSet.ConnectBlock(tr.block, tr.height, nil)
 		if err != nil {
 			return fmt.Errorf("connect block %s UTXOs during reorg: %w", tr.hash, err)
 		}
@@ -1402,11 +1417,11 @@ func (c *Chain) processOrphans(parentHash types.Hash) {
 
 			if orphan.Header.PrevBlock == c.tipHash {
 				orphanMTP := consensus.CalcMedianTimePast(parentHeight, getAncestor)
-				if _, err := consensus.ValidateTransactionInputs(orphan, c.utxoSet, newHeight, c.params, orphanMTP); err != nil {
+				if _, err := consensus.ValidateTransactionInputs(orphan, c.utxoSet, newHeight, c.params, orphanMTP, nil); err != nil {
 					logging.L.Debug("orphan failed tx input validation", "component", "chain", "hash", blockHash.ReverseString(), "error", err)
 					continue
 				}
-				undoData, err := c.utxoSet.ConnectBlock(orphan, newHeight)
+				undoData, err := c.utxoSet.ConnectBlock(orphan, newHeight, nil)
 				if err != nil {
 					logging.L.Warn("orphan UTXO connect failed", "component", "chain", "hash", blockHash.ReverseString(), "error", err)
 					continue
@@ -1646,5 +1661,16 @@ func (c *Chain) IsTipStale() bool {
 		threshold = 60
 	}
 	now := c.timeSource.Now()
-	return now-int64(tipHeader.Timestamp) > threshold
+	age := now - int64(tipHeader.Timestamp)
+	stale := age > threshold
+	if logging.DebugMode {
+		logging.L.Debug("[dbg] chain.IsTipStale",
+			"tip_height", c.tipHeight,
+			"tip_timestamp", tipHeader.Timestamp,
+			"now", now,
+			"age_seconds", age,
+			"threshold_seconds", threshold,
+			"stale", stale)
+	}
+	return stale
 }

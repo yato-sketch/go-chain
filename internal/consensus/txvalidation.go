@@ -120,8 +120,12 @@ func CheckSequenceLocks(tx *types.Transaction, blockHeight uint32, blockMedianTi
 // consensus.CalcMedianTimePast and pass it in. This matches Bitcoin Core's
 // GetMedianTimePast() usage for locktime enforcement.
 //
+// txHashes is an optional slice of pre-computed transaction hashes. When
+// non-nil, it must have the same length as block.Transactions. Pass nil to
+// have hashes computed on the fly.
+//
 // Returns the total fees collected by all non-coinbase transactions.
-func ValidateTransactionInputs(block *types.Block, utxoSet *utxo.Set, height uint32, p *params.ChainParams, medianTimePast uint32) (uint64, error) {
+func ValidateTransactionInputs(block *types.Block, utxoSet *utxo.Set, height uint32, p *params.ChainParams, medianTimePast uint32, txHashes []types.Hash) (uint64, error) {
 	medianTime := medianTimePast
 	var totalFees uint64
 
@@ -143,9 +147,15 @@ func ValidateTransactionInputs(block *types.Block, utxoSet *utxo.Set, height uin
 					return 0, fmt.Errorf("coinbase output %d: zero value not allowed", outIdx)
 				}
 			}
-			cbHash, err := crypto.HashTransaction(tx)
-			if err != nil {
-				return 0, fmt.Errorf("hash coinbase tx: %w", err)
+			var cbHash types.Hash
+			if txHashes != nil {
+				cbHash = txHashes[txIdx]
+			} else {
+				var err error
+				cbHash, err = crypto.HashTransaction(tx)
+				if err != nil {
+					return 0, fmt.Errorf("hash coinbase tx: %w", err)
+				}
 			}
 			for outIdx, out := range tx.Outputs {
 				key := utxo.OutpointKey(cbHash, uint32(outIdx))
@@ -170,9 +180,15 @@ func ValidateTransactionInputs(block *types.Block, utxoSet *utxo.Set, height uin
 			return 0, fmt.Errorf("tx %d: serialized size %d exceeds maximum %d bytes", txIdx, txSize, params.MaxTxSize)
 		}
 
-		txHash, err := crypto.HashTransaction(tx)
-		if err != nil {
-			return 0, fmt.Errorf("hash tx %d: %w", txIdx, err)
+		var txHash types.Hash
+		if txHashes != nil {
+			txHash = txHashes[txIdx]
+		} else {
+			var err error
+			txHash, err = crypto.HashTransaction(tx)
+			if err != nil {
+				return 0, fmt.Errorf("hash tx %d: %w", txIdx, err)
+			}
 		}
 
 		// Detect duplicate inputs within this single transaction.

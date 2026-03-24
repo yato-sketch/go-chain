@@ -186,17 +186,67 @@ func (a *App) GetWalletAddress() (string, error) {
 	return a.node.Wallet().GetDefaultAddress(), nil
 }
 
-// GetSyncProgress returns a value between 0.0 and 1.0 indicating sync progress.
+// GetSyncProgress returns a value between 0.0 and 1.0 indicating overall sync
+// progress across both phases (header sync = 0–0.5, block sync = 0.5–1.0).
 func (a *App) GetSyncProgress() (float64, error) {
 	if a.node == nil {
 		return 0, fmt.Errorf("node not initialized")
 	}
-	_, ourHeight := a.node.Chain().Tip()
-	bestPeer := a.node.P2PMgr().BestPeerHeight()
-	if bestPeer == 0 || ourHeight >= bestPeer {
-		return 1.0, nil
+	return a.computeSyncProgress(), nil
+}
+
+// computeSyncProgress calculates a combined two-phase progress value.
+// Header sync occupies 0.0–0.5, block sync occupies 0.5–1.0.
+// The target height is derived from the best v2+ peer height advertised
+// during handshake. If no peer height is known yet, headerHeight is used
+// as a lower-bound estimate so the bar still advances.
+func (a *App) computeSyncProgress() float64 {
+	bc := a.node.Chain()
+	p2p := a.node.P2PMgr()
+
+	syncState := p2p.GetSyncState()
+	_, blockHeight := bc.Tip()
+	headerHeight := p2p.HeaderSyncHeight()
+	bestPeerHeight := p2p.BestPeerHeight()
+
+	switch syncState {
+	case "SYNCED":
+		return 1.0
+	case "INITIAL":
+		if bestPeerHeight > 0 && blockHeight > 0 {
+			pct := float64(blockHeight) / float64(bestPeerHeight)
+			if pct > 1.0 {
+				pct = 1.0
+			}
+			return pct
+		}
+		return 0.0
+	case "HEADER_SYNC":
+		target := bestPeerHeight
+		if target == 0 {
+			target = headerHeight
+		}
+		if target == 0 {
+			return 0.01
+		}
+		headerPct := float64(headerHeight) / float64(target)
+		if headerPct > 1.0 {
+			headerPct = 1.0
+		}
+		return headerPct * 0.5
+	case "BLOCK_SYNC":
+		target := headerHeight
+		if target == 0 {
+			target = bestPeerHeight
+		}
+		if target == 0 || blockHeight >= target {
+			return 1.0
+		}
+		blockPct := float64(blockHeight) / float64(target)
+		return 0.5 + blockPct*0.5
+	default:
+		return 0.0
 	}
-	return float64(ourHeight) / float64(bestPeer), nil
 }
 
 // GetSyncStatus returns detailed sync state for the sync overlay modal.
@@ -214,21 +264,46 @@ func (a *App) GetSyncStatus() (map[string]interface{}, error) {
 	headerHeight := p2p.HeaderSyncHeight()
 	syncState := p2p.GetSyncState()
 	peers := p2p.PeerCount()
-
-	var progress float64
-	if bestPeerHeight == 0 || blockHeight >= bestPeerHeight {
-		progress = 1.0
-	} else {
-		progress = float64(blockHeight) / float64(bestPeerHeight)
-	}
+	progress := a.computeSyncProgress()
 
 	var lastBlockTime int64
 	if tipHeader, err := bc.TipHeader(); err == nil {
 		lastBlockTime = int64(tipHeader.Timestamp)
 	}
 
+	var stageLabel string
+	switch syncState {
+	case "INITIAL":
+		if peers == 0 {
+			stageLabel = "Connecting to network..."
+		} else {
+			stageLabel = "Preparing sync..."
+		}
+	case "HEADER_SYNC":
+		if bestPeerHeight > 0 {
+			stageLabel = fmt.Sprintf("Downloading headers... (%d / %d)", headerHeight, bestPeerHeight)
+		} else {
+			stageLabel = fmt.Sprintf("Downloading headers... (%d)", headerHeight)
+		}
+	case "BLOCK_SYNC":
+		target := headerHeight
+		if target == 0 {
+			target = bestPeerHeight
+		}
+		remaining := uint32(0)
+		if target > blockHeight {
+			remaining = target - blockHeight
+		}
+		stageLabel = fmt.Sprintf("Downloading blocks... (%d / %d, %d remaining)", blockHeight, target, remaining)
+	case "SYNCED":
+		stageLabel = "Synchronized"
+	default:
+		stageLabel = "Unknown"
+	}
+
 	return map[string]interface{}{
 		"syncState":      syncState,
+		"stageLabel":     stageLabel,
 		"headerHeight":   headerHeight,
 		"blockHeight":    blockHeight,
 		"bestPeerHeight": bestPeerHeight,

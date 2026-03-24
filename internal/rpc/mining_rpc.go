@@ -240,6 +240,13 @@ func (s *Server) rpcGetBlockTemplate(params []json.RawMessage) (interface{}, *js
 		"expires":           120,
 	}
 
+	if s.params.AllowMinDifficultyBlocks {
+		if activationHeight, ok := s.params.ActivationHeights["mindiffblocks"]; ok && newHeight >= activationHeight {
+			resp["mindifficultybits"] = fmt.Sprintf("%08x", s.params.MinBits)
+			resp["mindifficultyafter"] = int64(s.params.TargetBlockSpacing.Seconds()) * 2
+		}
+	}
+
 	// BIP 22: if the client advertises "coinbasetxn" capability, include a
 	// default coinbase transaction the pool can use or modify. This is what
 	// ckpool and most stratum servers expect.
@@ -367,10 +374,30 @@ func (s *Server) handleBlockProposal(req templateRequest) (interface{}, *jsonRPC
 	_, tipHeight := s.chain.Tip()
 	expectedBits := s.engine.CalcNextBits(tipHeader, tipHeight, s.chain.GetAncestor, s.params)
 	if block.Header.Bits != expectedBits {
-		return "bad-diffbits", nil
+		if !s.isValidMinDiffBits(&block, tipHeader, tipHeight) {
+			return "bad-diffbits", nil
+		}
 	}
 
 	return nil, nil
+}
+
+// isValidMinDiffBits returns true if the block's bits are valid under the
+// testnet min-difficulty reset rule (AllowMinDifficultyBlocks), gated by
+// the "mindiffblocks" activation height.
+func (s *Server) isValidMinDiffBits(block *types.Block, tipHeader *types.BlockHeader, tipHeight uint32) bool {
+	if !s.params.AllowMinDifficultyBlocks {
+		return false
+	}
+	activationHeight, ok := s.params.ActivationHeights["mindiffblocks"]
+	if !ok || tipHeight+1 < activationHeight {
+		return false
+	}
+	if block.Header.Bits != s.params.MinBits {
+		return false
+	}
+	minDiffGap := int64(s.params.TargetBlockSpacing.Seconds()) * 2
+	return int64(block.Header.Timestamp)-int64(tipHeader.Timestamp) > minDiffGap
 }
 
 // handleLongPoll blocks until the template identified by longpollID has been

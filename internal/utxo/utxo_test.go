@@ -283,7 +283,7 @@ func TestConnectBlockAtomicOnFailure(t *testing.T) {
 	countBefore := s.Count()
 	totalBefore := s.TotalValue()
 
-	_, err := s.ConnectBlock(block, 1)
+	_, err := s.ConnectBlock(block, 1, nil)
 	if err == nil {
 		t.Fatal("expected ConnectBlock to fail on missing UTXO")
 	}
@@ -334,7 +334,7 @@ func TestConnectBlockIntraBlockSpendNotLeaked(t *testing.T) {
 		},
 	}
 
-	undo, err := s.ConnectBlock(block, 1)
+	undo, err := s.ConnectBlock(block, 1, nil)
 	if err != nil {
 		t.Fatalf("ConnectBlock: %v", err)
 	}
@@ -381,7 +381,7 @@ func TestConnectBlockIntraBlockSpendNotLeaked(t *testing.T) {
 		},
 	})
 
-	_, err = s.ConnectBlock(block2, 2)
+	_, err = s.ConnectBlock(block2, 2, nil)
 	if err != nil {
 		t.Fatalf("ConnectBlock block2: %v", err)
 	}
@@ -446,7 +446,7 @@ func TestConnectBlockIntraBlockDoubleSpend(t *testing.T) {
 		},
 	}
 
-	_, err := s.ConnectBlock(block, 1)
+	_, err := s.ConnectBlock(block, 1, nil)
 	if err == nil {
 		t.Fatal("expected ConnectBlock to reject intra-block double spend")
 	}

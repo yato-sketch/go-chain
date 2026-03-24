@@ -74,6 +74,9 @@ type Peer struct {
 	// Per-peer getheaders throttle: max 1 response per 2 seconds.
 	lastGetHeadersResp time.Time
 
+	// Per-peer getblocks throttle during IBD.
+	lastGetBlocksResp time.Time
+
 	// Inventory deduplication — bounded FIFO to prevent unbounded growth.
 	knownInv  *boundedHashSet
 	sendQueue chan outMsg
@@ -346,6 +349,18 @@ func (p *Peer) CheckGetHeadersThrottle() bool {
 		return false
 	}
 	p.lastGetHeadersResp = time.Now()
+	return true
+}
+
+// CheckGetBlocksThrottle returns true if enough time has passed since the
+// last getblocks response to this peer. Used during IBD to prevent spam.
+func (p *Peer) CheckGetBlocksThrottle() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if time.Since(p.lastGetBlocksResp) < 5*time.Second {
+		return false
+	}
+	p.lastGetBlocksResp = time.Now()
 	return true
 }
 

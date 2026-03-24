@@ -5,7 +5,7 @@ import {
   GetWalletAddress,
   GetBlockchainInfo,
   GetPeerCount,
-  GetSyncProgress,
+  GetSyncStatus,
 } from "../../../wailsjs/go/main/App";
 
 function NetworkIcon({ peers }: { peers: number }) {
@@ -69,7 +69,8 @@ export function Overview() {
   const [height, setHeight] = useState(0);
   const [bestHash, setBestHash] = useState("");
   const [peers, setPeers] = useState(0);
-  const [syncProgress, setSyncProgress] = useState(1);
+  const [syncProgress, setSyncProgress] = useState(0);
+  const [syncState, setSyncState] = useState("INITIAL");
 
   useEffect(() => {
     const poll = () => {
@@ -82,7 +83,12 @@ export function Overview() {
         setBestHash(info.bestHash as string);
       });
       GetPeerCount().then(setPeers);
-      GetSyncProgress().then(setSyncProgress);
+      GetSyncStatus()
+        .then((s) => {
+          if (typeof s.progress === "number") setSyncProgress(s.progress as number);
+          if (typeof s.syncState === "string") setSyncState(s.syncState as string);
+        })
+        .catch(() => {});
       if (!address) {
         GetWalletAddress()
           .then((a) => {
@@ -96,7 +102,7 @@ export function Overview() {
     return () => clearInterval(id);
   }, [address]);
 
-  const synced = syncProgress >= 0.999;
+  const synced = syncState === "SYNCED";
 
   return (
     <div className="flex h-full flex-col gap-4">
@@ -233,7 +239,13 @@ export function Overview() {
               {synced ? "Synced" : `Syncing ${(syncProgress * 100).toFixed(1)}%`}
             </p>
             <p style={{ color: "var(--color-btc-text-dim)" }}>
-              {synced ? "Up to date" : "Downloading blocks\u2026"}
+              {synced
+                ? "Up to date"
+                : syncState === "HEADER_SYNC"
+                  ? "Downloading headers\u2026"
+                  : syncState === "BLOCK_SYNC"
+                    ? "Downloading blocks\u2026"
+                    : "Connecting\u2026"}
             </p>
           </div>
         </div>

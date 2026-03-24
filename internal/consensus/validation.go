@@ -26,7 +26,10 @@ import (
 //   - block size within limits
 //   - no duplicate transaction IDs
 //   - coinbase output value <= subsidy
-func ValidateBlockStructure(block *types.Block, height uint32, p *params.ChainParams) error {
+//
+// txHashes and serializedBytes are optional pre-computed caches. When non-nil,
+// they are used instead of re-computing, avoiding redundant work during IBD.
+func ValidateBlockStructure(block *types.Block, height uint32, p *params.ChainParams, txHashes []types.Hash, serializedBytes []byte) error {
 	if block.Header.Version < 1 {
 		return fmt.Errorf("unsupported block version %d", block.Header.Version)
 	}
@@ -58,40 +61,48 @@ func ValidateBlockStructure(block *types.Block, height uint32, p *params.ChainPa
 		return fmt.Errorf("block has %d transactions, max %d", len(block.Transactions), p.MaxBlockTxCount)
 	}
 
+	// Compute tx hashes if not pre-computed.
+	if txHashes == nil {
+		txHashes = make([]types.Hash, len(block.Transactions))
+		for i := range block.Transactions {
+			h, err := crypto.HashTransaction(&block.Transactions[i])
+			if err != nil {
+				return fmt.Errorf("hash tx %d: %w", i, err)
+			}
+			txHashes[i] = h
+		}
+	}
+
 	// Check for duplicate transaction IDs BEFORE merkle root validation.
 	// This ordering is critical: CVE-2012-2459 exploits the merkle tree's
 	// last-element duplication to create two different tx lists with the same
 	// root. By rejecting duplicates first, we prevent an attacker from
 	// poisoning the "invalid block" cache with a mutated block that shares
 	// the same merkle root as a legitimate block.
-	txIDs := make(map[types.Hash]struct{}, len(block.Transactions))
-	for i := range block.Transactions {
-		txID, err := crypto.HashTransaction(&block.Transactions[i])
-		if err != nil {
-			return fmt.Errorf("hash tx %d: %w", i, err)
-		}
-		if _, exists := txIDs[txID]; exists {
+	txIDSet := make(map[types.Hash]struct{}, len(txHashes))
+	for i, txID := range txHashes {
+		if _, exists := txIDSet[txID]; exists {
 			return fmt.Errorf("duplicate transaction ID %s at index %d", txID, i)
 		}
-		txIDs[txID] = struct{}{}
+		txIDSet[txID] = struct{}{}
 	}
 
-	// Verify merkle root.
-	merkle, err := crypto.ComputeMerkleRoot(block.Transactions)
-	if err != nil {
-		return fmt.Errorf("compute merkle root: %w", err)
-	}
+	// Verify merkle root using pre-computed hashes.
+	merkle := crypto.MerkleRoot(txHashes)
 	if merkle != block.Header.MerkleRoot {
 		return fmt.Errorf("merkle root mismatch: header=%s computed=%s", block.Header.MerkleRoot, merkle)
 	}
 
 	// Check block serialized size.
-	blockBytes, err := block.SerializeToBytes()
-	if err != nil {
-		return fmt.Errorf("serialize block for size check: %w", err)
+	if serializedBytes == nil {
+		var err error
+		serializedBytes, err = block.SerializeToBytes()
+		if err != nil {
+			return fmt.Errorf("serialize block for size check: %w", err)
+		}
 	}
-	if uint32(len(blockBytes)) > p.MaxBlockSize {
-		return fmt.Errorf("block size %d exceeds max %d", len(blockBytes), p.MaxBlockSize)
+	if uint32(len(serializedBytes)) > p.MaxBlockSize {
+		return fmt.Errorf("block size %d exceeds max %d", len(serializedBytes), p.MaxBlockSize)
 	}
 
 	// Coinbase value is validated in ValidateTransactionInputs where fees are known.

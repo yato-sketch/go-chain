@@ -13,6 +13,7 @@ import (
 
 	"github.com/bams-repo/fairchain/internal/chain"
 	"github.com/bams-repo/fairchain/internal/crypto"
+	"github.com/bams-repo/fairchain/internal/logging"
 	"github.com/bams-repo/fairchain/internal/types"
 )
 
@@ -20,7 +21,7 @@ const (
 	DefaultMaxInFlightPerPeer = 16
 	DefaultMaxGlobalInFlight  = 512
 	DefaultMaxStagingSize     = 1024
-	DefaultRequestTimeout     = 60 * time.Second
+	DefaultRequestTimeout     = 30 * time.Second
 )
 
 // BlockScheduler coordinates parallel block body downloads from multiple peers
@@ -106,10 +107,24 @@ func NewBlockScheduler(headerIdx *chain.HeaderIndex, c *chain.Chain) *BlockSched
 func (s *BlockScheduler) Populate() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.populateLocked()
+}
 
+func (s *BlockScheduler) populateLocked() {
 	_, tipHeight := s.chain.Tip()
 	s.nextConnectHeight = tipHeight + 1
 	bestHeaderHeight := s.headerIndex.BestHeaderHeight()
+
+	if logging.DebugMode {
+		logging.L.Debug("[dbg] scheduler.Populate",
+			"tip_height", tipHeight,
+			"next_connect", s.nextConnectHeight,
+			"best_header", bestHeaderHeight,
+			"gap", int(bestHeaderHeight)-int(tipHeight),
+			"existing_needed", len(s.needed),
+			"in_flight", len(s.inFlight),
+			"staging", len(s.staging))
+	}
 
 	alreadyQueued := make(map[types.Hash]struct{}, len(s.needed))
 	for _, e := range s.needed {
@@ -117,6 +132,7 @@ func (s *BlockScheduler) Populate() {
 	}
 
 	hashes := s.headerIndex.HeadersToFetch(s.nextConnectHeight, int(bestHeaderHeight-tipHeight))
+	newCount := 0
 	for i, h := range hashes {
 		height := s.nextConnectHeight + uint32(i)
 		if _, ok := alreadyQueued[h]; ok {
@@ -129,12 +145,45 @@ func (s *BlockScheduler) Populate() {
 			continue
 		}
 		s.needed = append(s.needed, schedulerEntry{Hash: h, Height: height})
+		newCount++
 	}
+
+	if logging.DebugMode {
+		logging.L.Debug("[dbg] scheduler.Populate done",
+			"fetched_hashes", len(hashes),
+			"new_queued", newCount,
+			"total_needed", len(s.needed))
+	}
+}
+
+// Reset clears all in-flight requests, staging, and the needed queue, then
+// repopulates from the current chain tip. Used when the scheduler is stuck
+// (e.g. staging full but next block missing).
+func (s *BlockScheduler) Reset() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	oldStaging := len(s.staging)
+	oldInFlight := len(s.inFlight)
+
+	s.needed = nil
+	s.inFlight = make(map[types.Hash]*inFlightEntry)
+	s.staging = make(map[types.Hash]*stagedBlock)
+	s.peerStats = make(map[string]*peerDownloadStats)
+
+	s.populateLocked()
+
+	logging.L.Info("[sync] scheduler reset",
+		"cleared_staging", oldStaging,
+		"cleared_in_flight", oldInFlight,
+		"new_needed", len(s.needed))
 }
 
 // AssignWork selects the next batch of blocks to request from a given peer.
 // Returns up to `limit` block hashes, respecting per-peer and global limits.
-func (s *BlockScheduler) AssignWork(peerAddr string, limit int) []types.Hash {
+// peerBestHeight is the peer's self-reported best block height; blocks above
+// this height are skipped for this peer (they'll be assigned to taller peers).
+func (s *BlockScheduler) AssignWork(peerAddr string, limit int, peerBestHeight uint32) []types.Hash {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -171,6 +220,10 @@ func (s *BlockScheduler) AssignWork(peerAddr string, limit int) []types.Hash {
 			remaining = append(remaining, entry)
 			continue
 		}
+		if entry.Height > peerBestHeight {
+			remaining = append(remaining, entry)
+			continue
+		}
 
 		s.inFlight[entry.Hash] = &inFlightEntry{
 			Hash:        entry.Hash,
@@ -184,6 +237,18 @@ func (s *BlockScheduler) AssignWork(peerAddr string, limit int) []types.Hash {
 	}
 
 	s.needed = remaining
+
+	if logging.DebugMode && len(assigned) > 0 {
+		logging.L.Debug("[dbg] scheduler.AssignWork",
+			"peer", peerAddr,
+			"peer_best_height", peerBestHeight,
+			"assigned", len(assigned),
+			"remaining_needed", len(remaining),
+			"global_in_flight", len(s.inFlight),
+			"peer_in_flight", stats.InFlight,
+			"staging", len(s.staging))
+	}
+
 	return assigned
 }
 
@@ -197,6 +262,12 @@ func (s *BlockScheduler) BlockReceived(hash types.Hash, block *types.Block, peer
 
 	entry, ok := s.inFlight[hash]
 	if !ok {
+		if logging.DebugMode {
+			logging.L.Debug("[dbg] scheduler.BlockReceived: not in-flight",
+				"hash", hash.ReverseString()[:16],
+				"peer", peerAddr,
+				"in_flight_count", len(s.inFlight))
+		}
 		return false
 	}
 
@@ -223,6 +294,16 @@ func (s *BlockScheduler) BlockReceived(hash types.Hash, block *types.Block, peer
 	delete(s.inFlight, hash)
 	s.staging[hash] = &stagedBlock{Block: block, PeerAddr: peerAddr}
 
+	if logging.DebugMode {
+		logging.L.Debug("[dbg] scheduler.BlockReceived: staged",
+			"hash", hash.ReverseString()[:16],
+			"height", entry.Height,
+			"peer", peerAddr,
+			"latency_ms", latency.Milliseconds(),
+			"staging_count", len(s.staging),
+			"in_flight_count", len(s.inFlight))
+	}
+
 	return true
 }
 
@@ -234,21 +315,57 @@ func (s *BlockScheduler) DrainReady() []stagedBlock {
 	defer s.mu.Unlock()
 
 	var ready []stagedBlock
+	startHeight := s.nextConnectHeight
 
 	for {
 		node := s.headerIndex.GetHeaderByHeight(s.nextConnectHeight)
 		if node == nil {
+			if logging.DebugMode && len(ready) == 0 {
+				logging.L.Debug("[dbg] scheduler.DrainReady: no header node at height",
+					"height", s.nextConnectHeight,
+					"staging_count", len(s.staging))
+			}
 			break
 		}
 
 		staged, ok := s.staging[node.Hash]
 		if !ok {
+			if logging.DebugMode && len(ready) == 0 {
+				logging.L.Debug("[dbg] scheduler.DrainReady: block not in staging",
+					"height", s.nextConnectHeight,
+					"hash", node.Hash.ReverseString()[:16],
+					"staging_count", len(s.staging),
+					"in_flight", len(s.inFlight))
+			}
+			// If staging is more than half full but the next sequential
+			// block is missing, flush staging back to needed to break the
+			// deadlock where staging is full, AssignWork is blocked, but
+			// the next block can never be drained.
+			if len(s.staging) > s.maxStagingSize/2 {
+				flushed := len(s.staging)
+				for hash := range s.staging {
+					s.needed = append(s.needed, schedulerEntry{Hash: hash, Height: 0})
+					delete(s.staging, hash)
+				}
+				logging.L.Warn("[sync] staging deadlock detected, flushed staging to needed",
+					"flushed", flushed,
+					"in_flight", len(s.inFlight),
+					"next_connect", s.nextConnectHeight)
+			}
 			break
 		}
 
 		delete(s.staging, node.Hash)
 		ready = append(ready, *staged)
 		s.nextConnectHeight++
+	}
+
+	if logging.DebugMode && len(ready) > 0 {
+		logging.L.Debug("[dbg] scheduler.DrainReady",
+			"drained", len(ready),
+			"from_height", startHeight,
+			"to_height", s.nextConnectHeight-1,
+			"remaining_staging", len(s.staging))
 	}
 
 	return ready
@@ -315,7 +432,16 @@ func (s *BlockScheduler) RemovePeer(peerAddr string) {
 func (s *BlockScheduler) IsComplete() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return len(s.needed) == 0 && len(s.inFlight) == 0 && len(s.staging) == 0
+	complete := len(s.needed) == 0 && len(s.inFlight) == 0 && len(s.staging) == 0
+	if logging.DebugMode {
+		logging.L.Debug("[dbg] scheduler.IsComplete",
+			"complete", complete,
+			"needed", len(s.needed),
+			"in_flight", len(s.inFlight),
+			"staging", len(s.staging),
+			"next_connect", s.nextConnectHeight)
+	}
+	return complete
 }
 
 // Stats returns scheduler statistics for logging/RPC.

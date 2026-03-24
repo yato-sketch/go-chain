@@ -45,13 +45,18 @@ func (e *Engine) CalcBlockWeight(header *types.BlockHeader) *big.Int {
 //   - previous block hash matches parent (uses identity hash, always DoubleSHA256)
 //   - bits match expected difficulty for this height
 //   - PoW hash meets target (uses the configured algorithm)
+//
+// On networks with AllowMinDifficultyBlocks (testnet), a block may use MinBits
+// if its timestamp exceeds the parent's by more than 2x the target block spacing.
+// This matches Bitcoin Core's testnet difficulty reset rule and prevents
+// difficulty death spirals when mining is intermittent.
 func (e *Engine) ValidateHeader(header *types.BlockHeader, parent *types.BlockHeader, height uint32, getAncestor func(uint32) *types.BlockHeader, p *params.ChainParams) error {
 	parentHash := crypto.HashBlockHeader(parent)
 	if header.PrevBlock != parentHash {
 		return fmt.Errorf("prev block hash mismatch: header=%s expected=%s", header.PrevBlock, parentHash)
 	}
 
-	expectedBits := e.CalcNextBits(parent, height-1, getAncestor, p)
+	expectedBits := e.calcExpectedBits(header, parent, height, getAncestor, p)
 	if header.Bits != expectedBits {
 		return fmt.Errorf("incorrect difficulty bits at height %d: got 0x%08x, expected 0x%08x", height, header.Bits, expectedBits)
 	}
@@ -64,9 +69,50 @@ func (e *Engine) ValidateHeader(header *types.BlockHeader, parent *types.BlockHe
 	return nil
 }
 
+// calcExpectedBits computes the expected difficulty bits for a block at the
+// given height. On testnet (AllowMinDifficultyBlocks), this implements
+// Bitcoin Core's min-difficulty reset: if the new block's timestamp is more
+// than 2x the target spacing after the parent, MinBits is required. On
+// non-retarget boundaries, if the parent used min-difficulty, we scan back
+// to find the last block with real difficulty to prevent min-difficulty
+// blocks from corrupting the next retarget calculation.
+func (e *Engine) calcExpectedBits(header *types.BlockHeader, parent *types.BlockHeader, height uint32, getAncestor func(uint32) *types.BlockHeader, p *params.ChainParams) uint32 {
+	activationHeight, hasActivation := p.ActivationHeights["mindiffblocks"]
+	if !p.AllowMinDifficultyBlocks || !hasActivation || height < activationHeight {
+		return e.retargeter.CalcNextBits(parent, height-1, getAncestor, p)
+	}
+
+	minDiffGap := int64(p.TargetBlockSpacing.Seconds()) * 2
+	if int64(header.Timestamp)-int64(parent.Timestamp) > minDiffGap {
+		return p.MinBits
+	}
+
+	if height%p.RetargetInterval == 0 {
+		return e.retargeter.CalcNextBits(parent, height-1, getAncestor, p)
+	}
+
+	// Non-retarget boundary: scan back past any min-difficulty blocks to
+	// find the last block with real difficulty. This prevents a sequence
+	// of min-difficulty blocks from artificially lowering difficulty at
+	// the next retarget.
+	scan := parent
+	scanHeight := height - 1
+	for scanHeight > 0 && scanHeight%p.RetargetInterval != 0 && scan.Bits == p.MinBits {
+		scanHeight--
+		scan = getAncestor(scanHeight)
+		if scan == nil {
+			break
+		}
+	}
+	if scan != nil {
+		return scan.Bits
+	}
+	return parent.Bits
+}
+
 // ValidateBlock delegates to the shared structural validation.
 func (e *Engine) ValidateBlock(block *types.Block, height uint32, p *params.ChainParams) error {
-	return consensus.ValidateBlockStructure(block, height, p)
+	return consensus.ValidateBlockStructure(block, height, p, nil, nil)
 }
 
 // CalcNextBits delegates difficulty computation to the injected Retargeter.
@@ -75,8 +121,10 @@ func (e *Engine) CalcNextBits(tip *types.BlockHeader, tipHeight uint32, getAnces
 }
 
 // PrepareHeader sets the difficulty bits on a new block header being built for mining.
+// The header's Timestamp must already be set before calling this method so that
+// the testnet min-difficulty rule can be evaluated.
 func (e *Engine) PrepareHeader(header *types.BlockHeader, parent *types.BlockHeader, parentHeight uint32, getAncestor func(height uint32) *types.BlockHeader, p *params.ChainParams) error {
-	header.Bits = e.CalcNextBits(parent, parentHeight, getAncestor, p)
+	header.Bits = e.calcExpectedBits(header, parent, parentHeight+1, getAncestor, p)
 	return nil
 }
 

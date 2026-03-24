@@ -126,7 +126,7 @@ func TestSchedulerAssignWork(t *testing.T) {
 	sched, _, _, _ := schedulerTestSetup(t, 10)
 	sched.Populate()
 
-	hashes := sched.AssignWork("peer1", 5)
+	hashes := sched.AssignWork("peer1", 5, 100000)
 	if len(hashes) != 5 {
 		t.Fatalf("expected 5 assigned, got %d", len(hashes))
 	}
@@ -142,7 +142,7 @@ func TestSchedulerBlockReceived(t *testing.T) {
 	sched, _, _, headers := schedulerTestSetup(t, 5)
 	sched.Populate()
 
-	hashes := sched.AssignWork("peer1", 5)
+	hashes := sched.AssignWork("peer1", 5, 100000)
 	if len(hashes) != 5 {
 		t.Fatalf("expected 5 assigned, got %d", len(hashes))
 	}
@@ -176,7 +176,7 @@ func TestSchedulerDrainReady(t *testing.T) {
 	sched, idx, _, headers := schedulerTestSetup(t, 5)
 	sched.Populate()
 
-	hashes := sched.AssignWork("peer1", 5)
+	hashes := sched.AssignWork("peer1", 5, 100000)
 	if len(hashes) != 5 {
 		t.Fatalf("expected 5 assigned, got %d", len(hashes))
 	}
@@ -209,7 +209,7 @@ func TestSchedulerDrainReadyGap(t *testing.T) {
 	sched, _, _, headers := schedulerTestSetup(t, 5)
 	sched.Populate()
 
-	sched.AssignWork("peer1", 5)
+	sched.AssignWork("peer1", 5, 100000)
 
 	// Only deliver blocks 0, 1, and 3 (skip 2).
 	for _, i := range []int{0, 1, 3} {
@@ -230,7 +230,7 @@ func TestSchedulerTimeout(t *testing.T) {
 	sched.requestTimeout = 1 * time.Millisecond
 	sched.Populate()
 
-	sched.AssignWork("peer1", 3)
+	sched.AssignWork("peer1", 3, 100000)
 	time.Sleep(5 * time.Millisecond)
 
 	timedOut := sched.HandleTimeout()
@@ -250,8 +250,8 @@ func TestSchedulerRemovePeer(t *testing.T) {
 	sched, _, _, _ := schedulerTestSetup(t, 10)
 	sched.Populate()
 
-	sched.AssignWork("peer1", 5)
-	sched.AssignWork("peer2", 3)
+	sched.AssignWork("peer1", 5, 100000)
+	sched.AssignWork("peer2", 3, 100000)
 
 	if sched.InFlightCount() != 8 {
 		t.Fatalf("expected 8 in-flight, got %d", sched.InFlightCount())
@@ -273,12 +273,12 @@ func TestSchedulerMaxInFlight(t *testing.T) {
 	sched.maxInFlightPerPeer = 4
 	sched.Populate()
 
-	hashes := sched.AssignWork("peer1", 10)
+	hashes := sched.AssignWork("peer1", 10, 100000)
 	if len(hashes) != 4 {
 		t.Fatalf("expected 4 assigned (per-peer limit), got %d", len(hashes))
 	}
 
-	hashes2 := sched.AssignWork("peer1", 10)
+	hashes2 := sched.AssignWork("peer1", 10, 100000)
 	if len(hashes2) != 0 {
 		t.Fatalf("expected 0 assigned (peer at limit), got %d", len(hashes2))
 	}
@@ -290,8 +290,8 @@ func TestSchedulerMaxGlobalInFlight(t *testing.T) {
 	sched.maxInFlightPerPeer = 16
 	sched.Populate()
 
-	sched.AssignWork("peer1", 5)
-	hashes := sched.AssignWork("peer2", 10)
+	sched.AssignWork("peer1", 5, 100000)
+	hashes := sched.AssignWork("peer2", 10, 100000)
 	if len(hashes) != 3 {
 		t.Fatalf("expected 3 assigned (global limit 8 - 5 = 3), got %d", len(hashes))
 	}
@@ -302,14 +302,14 @@ func TestSchedulerMaxStaging(t *testing.T) {
 	sched.maxStagingSize = 3
 	sched.Populate()
 
-	assigned := sched.AssignWork("peer1", 10)
+	assigned := sched.AssignWork("peer1", 10, 100000)
 	for i := 0; i < len(assigned) && i < 3; i++ {
 		block := &types.Block{Header: headers[i]}
 		sched.BlockReceived(assigned[i], block, "peer1")
 	}
 
 	// Staging is now at max. New assignments should be blocked.
-	hashes := sched.AssignWork("peer2", 5)
+	hashes := sched.AssignWork("peer2", 5, 100000)
 	if len(hashes) != 0 {
 		t.Fatalf("expected 0 assigned (staging full), got %d", len(hashes))
 	}
@@ -323,7 +323,7 @@ func TestSchedulerComplete(t *testing.T) {
 		t.Fatal("should not be complete before any work")
 	}
 
-	assigned := sched.AssignWork("peer1", 3)
+	assigned := sched.AssignWork("peer1", 3, 100000)
 	for i, h := range assigned {
 		block := &types.Block{Header: headers[i]}
 		sched.BlockReceived(h, block, "peer1")
@@ -344,7 +344,7 @@ func TestSchedulerStats(t *testing.T) {
 	sched, _, _, _ := schedulerTestSetup(t, 10)
 	sched.Populate()
 
-	sched.AssignWork("peer1", 3)
+	sched.AssignWork("peer1", 3, 100000)
 
 	stats := sched.Stats()
 	if stats.Needed != 7 {

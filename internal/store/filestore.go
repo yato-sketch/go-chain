@@ -68,6 +68,16 @@ func (fs *FileStore) WriteBlockNoSync(hash types.Hash, block *types.Block) (file
 	return fs.files.WriteBlockNoSync(block)
 }
 
+// WriteBlockRaw writes pre-serialized block bytes with fsync.
+func (fs *FileStore) WriteBlockRaw(hash types.Hash, data []byte) (fileNum, offset, size uint32, err error) {
+	return fs.files.WriteBlockRaw(data)
+}
+
+// WriteBlockNoSyncRaw writes pre-serialized block bytes without fsync.
+func (fs *FileStore) WriteBlockNoSyncRaw(hash types.Hash, data []byte) (fileNum, offset, size uint32, err error) {
+	return fs.files.WriteBlockNoSyncRaw(data)
+}
+
 // ReadBlock reads a block from flat files.
 func (fs *FileStore) ReadBlock(fileNum, offset, size uint32) (*types.Block, error) {
 	return fs.files.ReadBlock(fileNum, offset, size)
