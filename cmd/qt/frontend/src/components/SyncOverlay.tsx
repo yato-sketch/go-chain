@@ -1,4 +1,15 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import { AlertTriangle } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
+import { Separator } from "@/components/ui/separator";
 import { useCoinInfo } from "../hooks/useCoinInfo";
 import { GetSyncStatus } from "../../wailsjs/go/main/App";
 
@@ -96,183 +107,113 @@ export function SyncOverlay({ onHide }: { onHide: () => void }) {
 
   const isHeaderSync = status?.syncState === "HEADER_SYNC";
   const progressPct = status ? (status.progress * 100).toFixed(2) : "0.00";
+  const progressWidth = Math.min(100, status?.progress ? status.progress * 100 : 0);
 
   return (
-    <div
-      style={{
-        position: "absolute",
-        inset: 0,
-        zIndex: 50,
-        background: "var(--color-btc-deep)",
-        display: "flex",
-        flexDirection: "column",
-      }}
-    >
+    <div className="btc-noise absolute inset-0 z-50 flex flex-col bg-(--color-btc-deep)">
       {/* Warning banner */}
-      <div
-        style={{
-          display: "flex",
-          alignItems: "flex-start",
-          gap: 12,
-          padding: "16px 24px",
-          background: "var(--color-btc-surface)",
-          borderBottom: "1px solid var(--color-btc-border)",
-        }}
-      >
-        <svg
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="var(--color-btc-gold)"
-          strokeWidth={2}
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          style={{ width: 24, height: 24, flexShrink: 0, marginTop: 2 }}
-        >
-          <path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
-          <line x1="12" y1="9" x2="12" y2="13" />
-          <line x1="12" y1="17" x2="12.01" y2="17" />
-        </svg>
-        <div style={{ fontSize: 13, lineHeight: 1.5, color: "var(--color-btc-text)" }}>
-          <p>
-            Recent transactions may not yet be visible, and therefore your wallet's balance might be
-            incorrect. This information will be correct once your wallet has finished synchronizing
-            with the {coinInfo.name} network, as detailed below.
-          </p>
-          <p style={{ fontWeight: 600, marginTop: 4 }}>
-            Attempting to spend {coinInfo.nameLower} that are affected by not-yet-displayed
-            transactions will not be accepted by the network.
-          </p>
-        </div>
-      </div>
+      <Card className="rounded-none border-x-0 border-t-0 border-(--color-btc-border) bg-(--color-btc-surface) shadow-none ring-0">
+        <CardHeader className="flex flex-row items-start gap-3 px-6 py-4 sm:gap-4">
+          <AlertTriangle
+            className="mt-0.5 size-6 shrink-0 text-(--color-btc-gold)"
+            aria-hidden
+          />
+          <div className="min-w-0 flex-1 space-y-3">
+            <div className="flex flex-wrap items-center gap-2 sm:justify-between">
+              <CardTitle className="text-base leading-snug">Synchronizing wallet</CardTitle>
+              <Badge
+                variant="outline"
+                className="border-(--color-btc-gold)/35 text-(--color-btc-gold)"
+              >
+                {status == null ? "Connecting" : isHeaderSync ? "Header sync" : "Block sync"}
+              </Badge>
+            </div>
+            <CardDescription className="text-(--color-btc-text)">
+              <p className="text-sm leading-relaxed">
+                Recent transactions may not yet be visible, and therefore your wallet&apos;s balance
+                might be incorrect. This information will be correct once your wallet has finished
+                synchronizing with the {coinInfo.name} network, as detailed below.
+              </p>
+              <p className="mt-2 text-sm font-semibold leading-relaxed text-foreground">
+                Attempting to spend {coinInfo.nameLower} that are affected by not-yet-displayed
+                transactions will not be accepted by the network.
+              </p>
+            </CardDescription>
+          </div>
+        </CardHeader>
+      </Card>
 
-      {/* Sync detail table */}
-      <div
-        style={{
-          flex: 1,
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          padding: 32,
-        }}
-      >
-        <div style={{ width: "100%", maxWidth: 520 }}>
-          <table style={{ width: "100%", borderCollapse: "collapse" }}>
-            <tbody>
-              <Row
-                label="Number of blocks left"
-                value={
-                  status == null
-                    ? "Connecting..."
-                    : isHeaderSync
-                      ? `Unknown. Syncing Headers (${status.headerHeight.toLocaleString()})...`
-                      : blocksLeft > 0
-                        ? blocksLeft.toLocaleString()
-                        : "0"
-                }
-              />
-              <Row
-                label="Last block time"
-                value={status ? formatBlockTime(status.lastBlockTime) : "Unknown"}
-              />
-              <Row
-                label="Progress"
-                value={
-                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                    <span>{progressPct}%</span>
+      {/* Sync detail */}
+      <div className="flex flex-1 items-center justify-center p-6 sm:p-8">
+        <Card className="btc-glow w-full max-w-lg border-(--color-btc-border) bg-(--color-btc-card)">
+          <CardHeader className="border-b border-(--color-btc-border) pb-4">
+            <CardTitle className="text-base">Sync status</CardTitle>
+            <CardDescription>Live progress from your node.</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-0 px-0 pb-2 pt-0">
+            <StatRow
+              label="Number of blocks left"
+              value={
+                status == null
+                  ? "Connecting..."
+                  : isHeaderSync
+                    ? `Unknown. Syncing Headers (${status.headerHeight.toLocaleString()})...`
+                    : blocksLeft > 0
+                      ? blocksLeft.toLocaleString()
+                      : "0"
+              }
+            />
+            <Separator className="bg-(--color-btc-border)" />
+            <StatRow
+              label="Last block time"
+              value={status ? formatBlockTime(status.lastBlockTime) : "Unknown"}
+            />
+            <Separator className="bg-(--color-btc-border)" />
+            <StatRow
+              label="Progress"
+              value={
+                <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:items-center sm:gap-3">
+                  <span className="shrink-0 tabular-nums text-sm font-medium text-foreground">
+                    {progressPct}%
+                  </span>
+                  <div className="h-3.5 min-w-0 flex-1 overflow-hidden rounded-md border border-(--color-btc-border) bg-(--color-btc-surface)">
                     <div
-                      style={{
-                        flex: 1,
-                        height: 14,
-                        borderRadius: 3,
-                        background: "var(--color-btc-surface)",
-                        border: "1px solid var(--color-btc-border)",
-                        overflow: "hidden",
-                      }}
-                    >
-                      <div
-                        style={{
-                          height: "100%",
-                          width: `${Math.min(100, status?.progress ? status.progress * 100 : 0)}%`,
-                          background: "var(--color-btc-gold)",
-                          borderRadius: 2,
-                          transition: "width 0.6s ease",
-                        }}
-                      />
-                    </div>
+                      className="h-full rounded-sm bg-(--color-btc-gold) transition-[width] duration-500 ease-out"
+                      style={{ width: `${progressWidth}%` }}
+                    />
                   </div>
-                }
-              />
-              <Row
-                label="Progress increase per hour"
-                value={
-                  ratePerHour != null ? `${(ratePerHour * 100).toFixed(2)}%` : "calculating..."
-                }
-              />
-              <Row label="Estimated time left until synced" value={eta} />
-            </tbody>
-          </table>
-        </div>
+                </div>
+              }
+            />
+            <Separator className="bg-(--color-btc-border)" />
+            <StatRow
+              label="Progress increase per hour"
+              value={
+                ratePerHour != null ? `${(ratePerHour * 100).toFixed(2)}%` : "calculating..."
+              }
+            />
+            <Separator className="bg-(--color-btc-border)" />
+            <StatRow label="Estimated time left until synced" value={eta} />
+          </CardContent>
+        </Card>
       </div>
 
-      {/* Footer: version + hide */}
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          padding: "12px 24px",
-          borderTop: "1px solid var(--color-btc-border)",
-          background: "var(--color-btc-surface)",
-        }}
-      >
-        <span style={{ fontSize: 12, color: "var(--color-btc-text-dim)", fontFamily: "monospace" }}>
-          {coinInfo.version}
-        </span>
-        <button
-          onClick={onHide}
-          style={{
-            padding: "6px 20px",
-            fontSize: 13,
-            fontWeight: 500,
-            borderRadius: 4,
-            border: "1px solid var(--color-btc-border)",
-            background: "var(--color-btc-card)",
-            color: "var(--color-btc-text)",
-            cursor: "pointer",
-          }}
-        >
+      {/* Footer */}
+      <div className="flex items-center justify-between gap-4 border-t border-(--color-btc-border) bg-(--color-btc-surface) px-6 py-3">
+        <span className="font-mono text-xs text-(--color-btc-text-dim)">v{coinInfo.version}</span>
+        <Button variant="outline" size="sm" onClick={onHide}>
           Hide
-        </button>
+        </Button>
       </div>
     </div>
   );
 }
 
-function Row({ label, value }: { label: string; value: React.ReactNode }) {
+function StatRow({ label, value }: { label: string; value: ReactNode }) {
   return (
-    <tr>
-      <td
-        style={{
-          padding: "10px 16px 10px 0",
-          fontSize: 13,
-          fontWeight: 600,
-          color: "var(--color-btc-text)",
-          whiteSpace: "nowrap",
-          verticalAlign: "top",
-        }}
-      >
-        {label}
-      </td>
-      <td
-        style={{
-          padding: "10px 0",
-          fontSize: 13,
-          color: "var(--color-btc-text-muted)",
-          width: "60%",
-        }}
-      >
-        {value}
-      </td>
-    </tr>
+    <div className="grid gap-1 px-6 py-3 sm:grid-cols-[minmax(0,42%)_1fr] sm:gap-6 sm:py-3.5">
+      <span className="text-sm font-medium text-foreground">{label}</span>
+      <div className="text-sm text-(--color-btc-text-muted)">{value}</div>
+    </div>
   );
 }
