@@ -1,21 +1,16 @@
 /*
  * sha256mem GPU kernel — optimized for maximum GPU throughput
  * ============================================================
- * Algorithm (improved v3):
- *   1. Seed:     SHA256(80-byte header) via midstate
- *   2. Fill:     Sequential dependent fill over 64 MiB:
- *                - Every 256 slots: SHA256(previous) -> anchor
- *                - Between anchors: ARX(previous, index) -> slot
- *   3. Mix:      2,048 rounds: SHA256(acc || mem[idx]) -> acc
- *   4. Finalize: SHA256(acc) -> PoW hash
+ * Matches internal/algorithms/sha256mem/sha256mem.go (phone-friendly profile):
+ *   32 MiB DAG, harden every 256 slots, dual mix 2×16384 rounds.
  *
  * Copyright (c) 2024-2026 The Fairchain Contributors
  * Distributed under the MIT software license.
  */
 
-#define SHA256MEM_SLOTS           2097152
+#define SHA256MEM_SLOTS           1048576
 #define SHA256MEM_HARDEN_INTERVAL 256
-#define SHA256MEM_MIX_ROUNDS      32768
+#define SHA256MEM_MIX_ROUNDS      16384
 
 /* ── SHA256 core ─────────────────────────────────────────────────── */
 
@@ -200,13 +195,24 @@ __kernel void sha256mem_mine(
             }
         }
 
-        /* Phase 3: SHA256-per-hop mix */
+        /* Phase 3a+3b: dual SHA256-per-hop mix (matches Go mixPassA / mixPassB) */
         __global uint *last_slot = my_mem + (SHA256MEM_SLOTS - 1) * 8;
         uint acc[8];
         for (int w = 0; w < 8; w++) acc[w] = last_slot[w];
 
         for (int r = 0; r < SHA256MEM_MIX_ROUNDS; r++) {
             uint idx = acc[0] % SHA256MEM_SLOTS;
+            __global uint *slot = my_mem + idx * 8;
+
+            uint buf[16];
+            for (int w = 0; w < 8; w++) buf[w] = acc[w];
+            for (int w = 0; w < 8; w++) buf[8 + w] = slot[w];
+
+            sha256_64(buf, acc);
+        }
+
+        for (int r = 0; r < SHA256MEM_MIX_ROUNDS; r++) {
+            uint idx = acc[r % 7] % SHA256MEM_SLOTS;
             __global uint *slot = my_mem + idx * 8;
 
             uint buf[16];
@@ -283,6 +289,17 @@ __kernel void sha256mem_validate(
 
     for (int r = 0; r < SHA256MEM_MIX_ROUNDS; r++) {
         uint idx = acc[0] % SHA256MEM_SLOTS;
+        __global uint *slot = g_mem_pool + idx * 8;
+
+        uint buf[16];
+        for (int w = 0; w < 8; w++) buf[w] = acc[w];
+        for (int w = 0; w < 8; w++) buf[8 + w] = slot[w];
+
+        sha256_64(buf, acc);
+    }
+
+    for (int r = 0; r < SHA256MEM_MIX_ROUNDS; r++) {
+        uint idx = acc[r % 7] % SHA256MEM_SLOTS;
         __global uint *slot = g_mem_pool + idx * 8;
 
         uint buf[16];

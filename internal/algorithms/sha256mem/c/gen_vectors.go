@@ -1,5 +1,9 @@
+// Copyright (c) 2024-2026 The Fairchain Contributors
+// Distributed under the MIT software license.
+
 // gen_vectors generates 1000 sha256mem test vectors as hex pairs (input, expected_output).
-// Output format: one line per vector, "hex_input hex_output\n"
+// Run from repo root: go run ./internal/algorithms/sha256mem/c/gen_vectors.go
+// Output: test_vectors.txt in the current working directory.
 package main
 
 import (
@@ -13,7 +17,12 @@ import (
 func main() {
 	h := sha256mem.New()
 
-	f, err := os.Create("test_vectors.txt")
+	outPath := "test_vectors.txt"
+	if len(os.Args) > 1 {
+		outPath = os.Args[1]
+	}
+
+	f, err := os.Create(outPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "failed to create output file: %v\n", err)
 		os.Exit(1)
@@ -21,8 +30,6 @@ func main() {
 	defer f.Close()
 
 	for i := 0; i < 1000; i++ {
-		// Build deterministic inputs of varying lengths.
-		// i=0 → empty, i=1 → [0], i=2 → [0,1], ..., i=255 → [0..254], i=256 → [1,0], etc.
 		input := make([]byte, i)
 		for j := 0; j < i; j++ {
 			input[j] = byte((i + j) & 0xFF)
@@ -33,5 +40,5 @@ func main() {
 		fmt.Fprintf(f, "%s %s\n", hex.EncodeToString(input), hex.EncodeToString(result[:]))
 	}
 
-	fmt.Println("wrote 1000 test vectors to test_vectors.txt")
+	fmt.Println("wrote 1000 test vectors to", outPath)
 }

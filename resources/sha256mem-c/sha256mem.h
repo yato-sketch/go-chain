@@ -4,9 +4,10 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define SHA256MEM_SLOTS       4194304
-#define SHA256MEM_FILL_CHAINS 8192
-#define SHA256MEM_MIX_ROUNDS  2048
+/* Consensus parameters — must match internal/algorithms/sha256mem/sha256mem.go */
+#define SHA256MEM_SLOTS             1048576
+#define SHA256MEM_HARDEN_INTERVAL   256
+#define SHA256MEM_MIX_ROUNDS        16384
 
 /*
  * sha256mem_hash computes the memory-hard SHA256 proof-of-work hash.

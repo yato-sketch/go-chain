@@ -70,7 +70,7 @@ func TestPoWHashKnownVector(t *testing.T) {
 	// Locked known vector. Any change to constants, fill, mix, or
 	// finalize logic will break this test.
 	input := []byte{}
-	want, _ := hex.DecodeString("adbe5df9a2107338e151d667fa705293d59ac3518d0a9ee1e3b5db4976b505d7")
+	want, _ := hex.DecodeString("976d959d2ccb6b9f3cf3a09aa53f30b1bdf73ac179711afeacc1cce37e6e7776")
 	var expected types.Hash
 	copy(expected[:], want)
 
@@ -141,4 +141,16 @@ func BenchmarkPoWHash(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		h.PoWHash(input)
 	}
+}
+
+// BenchmarkPoWHashParallel runs PoWHash from GOMAXPROCS goroutines (default: all CPUs).
+func BenchmarkPoWHashParallel(b *testing.B) {
+	h := New()
+	input := []byte("benchmark input for sha256mem")
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			h.PoWHash(input)
+		}
+	})
 }

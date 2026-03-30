@@ -45,10 +45,10 @@ var Mainnet = &ChainParams{
 	DefaultPort:  19333,
 	AddressPrefix: 0x00,
 
-	// Pre-mined genesis block (sha256mem v3: 128 MiB fast-fill + SHA256-per-hop).
+	// Pre-mined genesis block (sha256mem: 64 MiB sequential fill + dual SHA256 mix).
 	// Coinbase: "fairchain genesis"
 	// Timestamp: 1774175035 (2026-03-22T10:23:55Z)
-	// Display hash: 7dc4fedfedf4b6c942db6e7d37577eccf661c390204105788bad3e8848f9cbdb
+	// Display hash: ed66675f3d5ca4cb16b1623252fbdfe49dbde4c021277ae0b026d09823a4cf56
 	GenesisBlock: types.Block{
 		Header: types.BlockHeader{
 			Version:   1,
@@ -61,7 +61,7 @@ var Mainnet = &ChainParams{
 			},
 			Timestamp: 1774175035,
 			Bits:      0x1e7ce359,
-			Nonce:     805312833,
+			Nonce:     2147491670,
 		},
 		Transactions: []types.Transaction{{
 			Version: 1,
@@ -78,10 +78,10 @@ var Mainnet = &ChainParams{
 		}},
 	},
 	GenesisHash: types.Hash{
-		0xdb, 0xcb, 0xf9, 0x48, 0x88, 0x3e, 0xad, 0x8b,
-		0x78, 0x05, 0x41, 0x20, 0x90, 0xc3, 0x61, 0xf6,
-		0xcc, 0x7e, 0x57, 0x37, 0x7d, 0x6e, 0xdb, 0x42,
-		0xc9, 0xb6, 0xf4, 0xed, 0xdf, 0xfe, 0xc4, 0x7d,
+		0x56, 0xcf, 0xa4, 0x23, 0x98, 0xd0, 0x26, 0xb0,
+		0xe0, 0x7a, 0x27, 0x21, 0xc0, 0xe4, 0xbd, 0x9d,
+		0xe4, 0xdf, 0xfb, 0x52, 0x32, 0x62, 0xb1, 0x16,
+		0xcb, 0xa4, 0x5c, 0x3d, 0x5f, 0x67, 0x66, 0xed,
 	},
 
 	TargetBlockSpacing:  10 * time.Minute,
@@ -90,8 +90,8 @@ var Mainnet = &ChainParams{
 	MaxTimeFutureDrift:  2 * time.Hour,
 	MinTimestampRule:    "median-11",
 
-	// Difficulty calibrated for sha256mem (~62 H/s per core, 64 MiB buffer, 32768 mix rounds).
-	// InitialBits will need recalibration after genesis re-mine.
+	// Difficulty calibrated for sha256mem dual-mix (~20–30 H/s per core class CPU; varies by SHA-NI).
+	// InitialBits may need recalibration if PoW parameters change again.
 	InitialBits:      0x1e7ce359,
 	MinBits:          0x1f7fffff, // Floor ≈ 8x easier than initial; allows difficulty to recover after hash rate drops
 	NoRetarget:       false,
@@ -129,10 +129,10 @@ var Testnet = &ChainParams{
 	DefaultPort:  19334,
 	AddressPrefix: 0x6F,
 
-	// Pre-mined genesis block (sha256mem v3: 128 MiB fast-fill + SHA256-per-hop).
+	// Pre-mined genesis block (sha256mem: 64 MiB sequential fill + dual SHA256 mix).
 	// Coinbase: "fairchain genesis"
 	// Timestamp: 1774176069 (2026-03-22T10:41:09Z)
-	// Display hash: 4fc52f197f3f78db983a3421d425874f21f65b16afda368046875c66d7618012
+	// Display hash: 2fdc82c99a3e6284aeb96932fe489c2d3e20944568bba8a8a380865ca4b7306e
 	GenesisBlock: types.Block{
 		Header: types.BlockHeader{
 			Version:   1,
@@ -145,7 +145,7 @@ var Testnet = &ChainParams{
 			},
 			Timestamp: 1774176069,
 			Bits:      0x1f3a910b,
-			Nonce:     2415919171,
+			Nonce:     43,
 		},
 		Transactions: []types.Transaction{{
 			Version: 1,
@@ -168,10 +168,10 @@ var Testnet = &ChainParams{
 		}},
 	},
 	GenesisHash: types.Hash{
-		0x12, 0x80, 0x61, 0xd7, 0x66, 0x5c, 0x87, 0x46,
-		0x80, 0x36, 0xda, 0xaf, 0x16, 0x5b, 0xf6, 0x21,
-		0x4f, 0x87, 0x25, 0xd4, 0x21, 0x34, 0x3a, 0x98,
-		0xdb, 0x78, 0x3f, 0x7f, 0x19, 0x2f, 0xc5, 0x4f,
+		0x6e, 0x30, 0xb7, 0xa4, 0x5c, 0x86, 0x80, 0xa3,
+		0xa8, 0xa8, 0xbb, 0x68, 0x45, 0x94, 0x20, 0x3e,
+		0x2d, 0x9c, 0x48, 0xfe, 0x32, 0x69, 0xb9, 0xae,
+		0x84, 0x62, 0x3e, 0x9a, 0xc9, 0x82, 0xdc, 0x2f,
 	},
 
 	TargetBlockSpacing:  5 * time.Second,
@@ -180,7 +180,7 @@ var Testnet = &ChainParams{
 	MaxTimeFutureDrift:  2 * time.Minute,
 	MinTimestampRule:    "median-11",
 
-	// Difficulty calibrated for sha256mem v3 (~27 H/s per core).
+	// Difficulty calibrated for sha256mem dual-mix (order ~10–30 H/s per core on testnet hardware).
 	// 0x1f3a910b ≈ 570 hashes ≈ ~21 sec on a single core.
 	InitialBits:              0x1f3a910b,
 	MinBits:                  0x207fffff, // Floor: trivial difficulty (same as regtest)

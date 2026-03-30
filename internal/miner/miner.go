@@ -289,8 +289,8 @@ func (m *Miner) MineOne(ctx context.Context) (*types.Block, error) {
 func (m *Miner) searchNonceSpace(ctx context.Context, header types.BlockHeader, target types.Hash, txs []types.Transaction, tipHash types.Hash) (*types.Block, bool) {
 	numWorkers := m.workers
 	rangeSize := uint64(0x100000000) / uint64(numWorkers)
-	// Keep batches tiny for memory-hard PoW. sha256mem runs at ~1 H/s
-	// per core, so even a batch of 128 delays stale-work detection by
+	// Keep batches tiny for memory-hard PoW. sha256mem runs on the order of
+	// tens of hashes per second per core, so even a batch of 128 delays
 	// minutes. With 5-second block targets we must check for new tips
 	// after every few hashes to avoid mining on a stale parent.
 	const batchSize = uint64(4)
